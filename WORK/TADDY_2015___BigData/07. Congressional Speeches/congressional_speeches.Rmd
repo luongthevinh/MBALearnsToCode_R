@@ -1,0 +1,146 @@
+---
+title: 'Congressional Speech Topics'
+output: pdf_document
+fontsize: 10
+geometry: margin=0.5in
+---
+(Student: Vinh Luong - 442069)
+
+
+``` {r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Set workding directory
+setwd('C:/Cloud/Box Sync/WORK/Chicago Booth/COURSES/3. Big Data/Assignments/07. Congressional Speeches')
+# Load key packages
+library(data.table)
+library(plyr)
+library(reshape2)
+library(ggplot2)
+library(caret)
+library(gamlr)
+library(lubridate)
+# Start parallel computing cluster over multi cores
+library(doParallel)
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+getDoParWorkers()
+```
+
+```{r echo=FALSE, message=FALSE}
+library(textir)
+library(maptpx) # for the topics function
+source("kIC.R") ## utility script
+data(congress109)
+independents_indices <- which(congress109Ideology$party == "I")
+congress109Ideology <- congress109Ideology[-independents_indices, ]
+congress109Counts <- congress109Counts[-independents_indices, ]
+congress109Ideology$party <- factor(congress109Ideology$party) 
+phrases = colnames(congress109Counts)
+```
+
+# 1. Unsupervised Topic Clustering
+
+We fit a number of K-Means clustering models to the phrase counts data, with various K = 5, 10, 15, 20, 25:
+
+```{r echo=FALSE}
+scaled_phrase_counts <- scale(as.matrix(congress109Counts))
+k_values <- c(5, 10, 15, 20, 25)
+k_means_models <- lapply(k_values, function(k) kmeans(scaled_phrase_counts, k, iter.max = 300, nstart = 300))
+k_means_models_bic <- sapply(k_means_models, kIC ,"B")
+## plot BIC
+plot(k_means_models_bic, xlab="K", ylab="BIC", 
+  ylim=range(k_means_models_bic), # get them on same page
+	bty="n", type="l", lwd=2, xaxt="n")
+axis(1, at=1:5, labels=k_values)
+abline(v=which.min(k_means_models_bic))
+title("BIC of Various K-Means Models")
+```
+
+From the above plot, we select K = 15 corresponding lowest BIC. Let's look at the 10 most common phrases in the 15 clusters:
+
+```{r echo=FALSE}
+selected_k_means_model <- k_means_models[[3]]
+print(apply(selected_k_means_model$centers, 1, function(c) colnames(scaled_phrase_counts)[order(-c)[1:10]]))
+```
+
+From the above, we can see a few key topics emerging from the congressional speeches:
+
+* General Law/Policy-Making on energy, heritage preservation, drug, etc.
+* Minorities, Poverty and Wealth Gap
+* The Iraq War
+* Economy, Business, Growth, Jobs
+* Tax, Government Spending and Budget Decifit
+* Law and Justice
+* Energy and Scientific Research
+* Foreign Affairs, Defense and Immigration
+* Foreign Trade
+
+
+# 2. Topic Model
+
+We now fit a number of topic models over the phrase counts, trying K = 5, 10, 15, 20, 25 topics:
+
+```{r echo=FALSE, message=FALSE}
+x <- as.simple_triplet_matrix(congress109Counts)
+tpcs <- topics(x, K = k_values, verb = 0)
+```
+
+The selected model by Bayes factor corresponds to K = 15 topics, with the following top-10 phrases:
+```{r echo=FALSE}
+summary(tpcs, n = 10)
+```
+
+Topics that emerge are similar to those discovered by K-Means:
+
+* General Law-/Policy-Making
+* Immigration Reform
+* Gun Control
+* Foreign Trade
+* Science
+* Law and Justice
+
+
+# 3. Relationship between Topics and Partisanships
+
+Let's now take a look at the topics by partisanship:
+
+```{r echo=FALSE}
+table(congress109Ideology$party, selected_k_means_model$cluster)
+```
+
+From this table, we can see that Democrats dominate the topic government spending on various welfare programs (supposedly to boost those programs), whereas Republicans dominate the topic of economy / business / jobs. There is one topic which both major parties talked about, which seems to be related to general law-making.
+
+Next, we can try regression partisanships and *repshare* onto the topic weights $\omega$ from the topic model, and then compare these models with regressions of partisanships and *repshare* onto the percentage of phrases used by the representatives:
+
+```{r echo=FALSE}
+phrase_percentages <- 100 * congress109Counts / rowSums(congress109Counts)
+```
+
+```{r echo=FALSE}
+par(mfrow=c(1, 2))
+
+party_on_topic_omegas <- cv.gamlr(tpcs$omega, congress109Ideology$party, family = "binomial")
+plot(party_on_topic_omegas, ylim=c(0.6, 1.4))
+title("Party ~ Topics")
+
+party_on_phrase_percentages <- cv.gamlr(phrase_percentages, congress109Ideology$party, family = "binomial")
+plot(party_on_phrase_percentages, ylim=c(0.6, 1.4))
+title("Party ~ Phrase %s")
+```
+
+```{r echo=FALSE}
+par(mfrow=c(1, 2))
+
+repshare_on_topic_omegas <- cv.gamlr(tpcs$omega, congress109Ideology$repshare)
+plot(repshare_on_topic_omegas, ylim=c(0.01, 0.02))
+title("repshare ~ Topics")
+
+repshare_on_phrase_percentages <- cv.gamlr(phrase_percentages, congress109Ideology$repshare)
+plot(repshare_on_phrase_percentages, ylim=c(0.01, 0.02))
+title("repshare ~ Phrase %s")
+```
+
+We can see that both topic regressions perform better in terms of goodness of fit than the regressions on the relative use of individual word phrases. Hence summarizing the 1,000 word phrases into a small collection of topics is a good dimensionality reduction exercise.
+
+```{r echo=FALSE}
+stopCluster(cl)
+```

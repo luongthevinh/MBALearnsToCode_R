@@ -1,0 +1,145 @@
+---
+title: 'Home Values Analysis'
+output: pdf_document
+fontsize: 12
+geometry: margin=1in
+---
+(Student: Vinh Luong - 442069)
+
+###
+
+
+
+``` {r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Set workding directory
+setwd('C:/Cloud/Box Sync/WORK/Chicago Booth/COURSES/3. Big Data/Assignments/Week 02')
+# Load GGPLOT2 and RESHAPE2 packages
+library(caret)
+library(doParallel)
+library(data.table)
+library(plyr)
+library(reshape2)
+library(ggplot2)
+library(gridExtra)
+library(doParallel)
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+getDoParWorkers()
+```
+
+
+### 1.DATA IMPORT & PRE-PROCESSING
+
+First of all, we read in the data and change the columns to make them less of an eyesore. We remove the *FirstMortgageAmount* and *PurchasePrice* variables as they are very directly linked to the *CurrentValue*  variable of interest. We also get rid of several rows that have negative *Household Income*. 
+``` {r results='hide'}
+file_name <- "homes2004.csv"
+homes <- read.csv(file_name, stringsAsFactors = TRUE)
+homes <- as.data.table(homes)
+setnames(homes, c("FirstMortgageAmount", "NearApartments", "NearBusiness", "NearIndustry",
+                  "NearGreen", "NearTrash", "NearSingleFamilyTownhouses", "NearSingleFamilyHomes",
+                  "NearMajorTransportLink", "NearAbandonedBuildings", "HomeRating",
+                  "NeighborhoodRating", "NeighborhoodBadSmells", "NeighborhoodNoisy",
+                  "HouseholdIncome", "NumPersons", "NumAdults", "EducationLevel",
+                  "NumUnitsInBuilding", "MortgateInterestRate", "RuralOrUrban", "State",
+                  "PurchasePrice", "NumBathrooms", "NumBedrooms", "MortgateBoughtSameYear",
+                  "DownpaymentSource", "CurrentValue", "FirstHome"))
+homes <- homes[HouseholdIncome >= 0, ]
+excluded_vars = homes[, .(FirstMortgageAmount, PurchasePrice)]
+homes[, c("FirstMortgageAmount", "PurchasePrice") := NULL]
+```
+
+### 2. LINEAR REGRESSION OF log(VALUE)
+
+Below, we run a linear regression of the *log* of *CurrentValue* on all other variables except *MortgageAmount* and *PurchasePrice*:  
+``` {r warning=FALSE}
+linear_model <- train(log(CurrentValue) ~ ., data = copy(homes), method = 'glm')
+results <- coef(summary(linear_model$finalModel))[, c("Estimate", "Pr(>|t|)")]
+results
+r_square <- 1 - summary(linear_model$finalModel)$deviance /
+  summary(linear_model$finalModel)$null.deviance
+```
+This model has an R^2 statistic of **`r r_square`**.
+
+```{r warning=FALSE, echo=FALSE}
+pvals <- results[, 2]
+source("fdr.R")
+alpha = fdr_cut(pvals, 0.1, plotit=TRUE)
+```
+In order to control the expected False Discovery Rate at 10%, we should only consider variables with coefficients that have p-values smaller than **`r alpha`**. The list of such variables is below:
+```{r}
+results[pvals < alpha, ]
+```
+
+We run a second regression on these variables only:
+```{r}
+linear_model_fewer_vars <- train(log(CurrentValue) ~ NearApartments + NearIndustry + NearTrash +
+                                   NearSingleFamilyHomes + NearAbandonedBuildings + HomeRating +
+                                   NeighborhoodRating + NeighborhoodNoisy + HouseholdIncome +
+                                   EducationLevel + MortgateInterestRate + RuralOrUrban + State +
+                                   NumBathrooms + NumBedrooms + MortgateBoughtSameYear +
+                                   DownpaymentSource + FirstHome,
+                                 data = copy(homes), method = "glm")
+results_2 <- coef(summary(linear_model_fewer_vars$finalModel))[, c("Estimate", "Pr(>|t|)")]
+results_2
+r_square_2 <- 1 - summary(linear_model_fewer_vars$finalModel)$deviance /
+  summary(linear_model_fewer_vars$finalModel)$null.deviance
+```
+The model with fewer variables has an *R*^2^ statistic of **`r r_square_2`**, which is almost identical to the previous model' *R*^2^ of `r r_square`, suggesting that the removed variables do not indeed matter much.
+
+
+# 3. LOGISTIC REGRESSION
+
+We create a new variable indicating whether the buyer had over 20% downpayment in the purchase, and regress it on the same independent variables as above:
+```{r}
+homes$Over20PercentDownpayment <-
+  factor(excluded_vars$FirstMortgageAmount < 0.8 * excluded_vars$PurchasePrice)
+logistic_model <- train(Over20PercentDownpayment ~ ., data = copy(homes),
+                        method = "glm", family = "binomial")
+r_square <- 1 - summary(logistic_model$finalModel)$deviance /
+  summary(logistic_model$finalModel)$null.deviance
+summary(logistic_model)
+```
+The coefficient on *FirstHome* is negative (-0.37), implying that young persons who buy homes for the first time are likely to have less equity financing available and hence are more reliant on debt. The odds of people buying their first homes putting down over 20% downpayment is *exp*(-0.37) = 0.69 times that of people buying subsequent homes doing so. 
+
+The coefficent on *NumBathrooms* is positive (0.24), implying that people buying larger homes also tend to have a greater % downpayment.
+
+This logistic regression has an *R*^2^ statistic of **`r r_square`**.
+
+
+We fit a second logistic regression with the interactions of the above two variables:
+```{r}
+logistic_model_with_interaction <- train(Over20PercentDownpayment ~ . + FirstHome * NumBathrooms,
+                                         data = copy(homes), method = "glm", family = "binomial")
+summary(logistic_model_with_interaction)
+```
+The coefficients on *FirstHome* and *NumBathrooms* are now both more moderate in absolute value, and there is a statistically significant coefficient of -0.2 on the interaction term.
+
+
+### 4. IN-SAMPLE AND OUT-OF-SAMPLE TESTS
+
+We re-fit the first logistic regression on a the data set with homes with value over $100,000 only:
+```{r}
+logistic_model_over_100k <- train(Over20PercentDownpayment ~ .,
+                                  data = copy(homes[CurrentValue > 1e5, ]),
+                                  method = "glm", family = "binomial")
+r_square <- 1 - summary(logistic_model_over_100k$finalModel)$deviance /
+  summary(logistic_model_over_100k$finalModel)$null.deviance
+```
+The *R*^2^ statistic for this model is **`r r_square`**.
+
+We then use this model to fit the data set with home values below $100,000, and measure the goodness of fit 
+*R*^2^ from the deviance statistics:
+```{r}
+pred <- predict(logistic_model_over_100k$finalModel,
+                as.data.frame(model.matrix(~ ., copy(homes[CurrentValue < 1e5, ]))),
+                type = 'response')
+source('deviance.R')
+r_square_2 <- R2(copy(homes[CurrentValue < 1e5, ])$Over20PercentDownpayment, pred,
+                 family = "binomial")
+```
+This model has an *R*^2^ statistic of **`r r_square_2`**, which is much worse than the previous model's *R*^2^ statistic of `r r_square`. This suggests that the patterns are very different in the two data sets above and below the $100,000 valuation threshold.
+
+
+```{r echo=FALSE}
+stopCluster(cl)
+```

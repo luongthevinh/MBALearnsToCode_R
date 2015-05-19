@@ -1,0 +1,153 @@
+---
+title: 'Drama Actors: Who Knows Who?'
+output: pdf_document
+fontsize: 12
+geometry: margin=0.5in
+---
+(Student: Vinh Luong - 442069)
+
+
+``` {r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Set workding directory
+setwd('C:/Cloud/Box Sync/WORK/Chicago Booth/COURSES/3. Big Data/Assignments/06. IMDB Actors')
+# Load key packages
+library(data.table)
+library(plyr)
+library(reshape2)
+library(ggplot2)
+library(caret)
+library(gamlr)
+library(lubridate)
+library(igraph)
+# Start parallel computing cluster over multi cores
+library(doParallel)
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+getDoParWorkers()
+```
+
+
+# 1. Drama Actors Network
+
+```{r echo=FALSE, warning=FALSE}
+### GRAPH
+## read in a graph in the `graphml' formal: xml for graphs.
+## it warns about pre-specified ids, but we want this here
+## (these ids match up with the castlists in movies.txt)
+actnet <- read.graph("actors.graphml",format="graphml")
+num_actors <- length(V(actnet))
+
+### TRANSACTION
+## read in the table of actor ids for movies
+## this is a bit complex, because the movie names
+## contain all sorts of special characters.
+movies <- read.table("movies.txt", sep="\t", 
+  row.names=1, as.is=TRUE, comment.char="", quote="")
+## it's a 1 column matrix.  treat it like a vector
+movies <- drop(as.matrix(movies))
+## each element is a comma-separated set of actor ids.  
+## use `strsplit' to break these out
+movies <- strsplit(movies,",")
+num_movies <- length(movies)
+```
+
+We have at hand a database of connectivities among `r formatC(num_actors, big.mark=',')` actors in `r formatC(num_movies, big.mark=',')` drama movies. Below is a plot of the network of the Drama Actors sample, where each edge represents a co-acting relationship between two actors in one same movie.
+
+```{r echo=FALSE}
+plot(actnet, edge.curved=FALSE, vertex.size=3, vertex.color='red', vertex.label=NA)
+```
+
+# 2. How Connected is Kevin Bacon?
+
+Let's now consider the network around Kevin Bacon, who is considered one of the most connected actors in the world.
+
+```{r echo=FALSE}
+bacon_neighborhood_1 <- graph.neighborhood(actnet, order = 1, nodes = "Bacon, Kevin")[[1]]
+```
+
+At order 1, Bacon's network neighborhood contains `r formatC(length(V(bacon_neighborhood_1)), big.mark=',')` actors with `r formatC(length(E(bacon_neighborhood_1)), big.mark=',')` co-acting relationships. A plot of this network neighborhood is below:
+
+```{r echo=FALSE}
+plot(bacon_neighborhood_1, edge.curved=FALSE, vertex.size=3, vertex.label=NA)
+```
+
+```{r echo=FALSE}
+bacon_neighborhood_2 <- graph.neighborhood(actnet, order = 2, nodes = "Bacon, Kevin")[[1]]
+```
+
+At order 2, the network neighborhood grows to `r formatC(length(V(bacon_neighborhood_2)), big.mark=',')` actors with `r formatC(length(E(bacon_neighborhood_2)), big.mark=',')` co-acting relationships.
+
+```{r echo=FALSE}
+plot(bacon_neighborhood_2, edge.curved=FALSE, vertex.size=3, vertex.label=NA)
+```
+
+```{r echo=FALSE}
+bacon_neighborhood_3 <- graph.neighborhood(actnet, order = 3, nodes = "Bacon, Kevin")[[1]]
+```
+
+At order 3, this neighborhood contains a staggering `r formatC(length(V(bacon_neighborhood_3)), big.mark=',')` actors with `r formatC(length(E(bacon_neighborhood_3)), big.mark=',')` co-acting relationships.
+
+```{r echo=FALSE}
+plot(bacon_neighborhood_3, edge.curved=FALSE, vertex.size=3, vertex.label=NA)
+```
+
+
+# 3. The Most Common & the Most Connected Actors
+
+```{r echo=FALSE}
+## and finally, match ids to names from actnet
+casts <- lapply(movies, 
+  function(m) V(actnet)$name[match(m, V(actnet)$id)])
+
+num_movies <- rep(0, num_actors)
+dt <- data.table(actor=V(actnet)$name, num_movies=num_movies)
+setkey(dt, actor)
+for (i in 1 : length(casts)) {
+  dt[casts[[i]], num_movies := num_movies + 1]
+}
+most_appearance_index = which.max(dt$num_movies)
+```
+
+In this database, the actor who appeared in the most movies is `r dt$actor[most_appearance_index]`, who starred in `r formatC(dt$num_movies[most_appearance_index], big.mark=',')` dramas.
+
+```{r echo=FALSE}
+degrees <- degree(actnet)
+most_connected_index = which.max(degrees)
+```
+
+The actor who is most connected is `r names(degrees)[most_connected_index]`, who co-starred with a staggering `r formatC(degrees[most_connected_index], big.mark=',')` other actors.
+
+Let's now find a path connecting my two favorite actors: Tom Hanks and John Malkovich. It turns out they have never acted together, but have a common co-actor in Sally Field.
+
+```{r echo=FALSE}
+hanks_to_malkovich <- get.shortest.paths(actnet, from="Hanks, Tom", to="Malkovich, John")[[1]][[1]]
+V(actnet)[hanks_to_malkovich]
+```
+
+# 4. Actor-Cast Association Rules
+
+Let's now find the pair-wise association rules among cast members with support of at least 0.01% and confidence of at least 10%.
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+## format as arules transaction baskets
+library(arules)
+casttrans <- as(casts, "transactions")
+castrules <- apriori(casttrans, 
+  parameter=list(support=.00001, confidence=.1, maxlen=2))
+```
+
+The 10 pairs with the highest support: 
+```{r echo=FALSE}
+top.support <- sort(castrules, decreasing = TRUE, na.last = NA, by = "support")
+inspect(top.support[1 : 10])
+```
+
+Also interesting are pairs who always acted together, i.e. they have the perfect confidence of 100% in their association rules:
+```{r echo=FALSE}
+top.lift <- sort(castrules, decreasing = TRUE, na.last = NA, by = "lift")
+inspect(top.lift[1:10])
+```
+
+```{r echo=FALSE}
+stopCluster(cl)
+```

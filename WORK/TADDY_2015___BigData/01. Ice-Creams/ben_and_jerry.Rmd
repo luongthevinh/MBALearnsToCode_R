@@ -1,0 +1,293 @@
+---
+title: 'Ben & Jerry: Ice-Cool Stats'
+output: pdf_document
+fontsize: 12
+geometry: margin=1in
+---
+(Student: Vinh Luong - 442069)
+
+###
+
+
+
+``` {r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Set workding directory
+setwd('C:/Cloud/Box Sync/WORK/Chicago Booth/COURSES/3. Big Data/Assignments/01. Ice-Creams')
+# Load GGPLOT2 and RESHAPE2 packages
+library(caret)
+library(doParallel)
+library(data.table)
+library(plyr)
+library(reshape2)
+library(ggplot2)
+library(gridExtra)
+library(doParallel)
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+getDoParWorkers()
+```
+
+
+### 1. COOL TOPIC
+
+``` {r echo=FALSE}
+# Read into Data Table
+file_name <- "BenAndJerry.csv"
+benjer <- fread(file_name, stringsAsFactors = TRUE)
+```
+
+With the retreat of the Chicago winter, it is now pleasant enough to look at a kind of data set that would have made us shiver just a few weeks ago: `r formatC(nrow(benjer), format = 'd', big.mark = ",")` purchases of Ben & Jerry's ice-creams throughout the country.
+
+The key question we will be tackling today is: **what makes people buy more expensive ice-creams**? Why? More expensive ice-creams create *dolce vitae* for everyone around, from the buyers who can afford them to Messrs. Ben Cohen and Jerry Greenfield and their spouses and heirs and heiresses and their shareholders and the causes and politicians they support.
+
+But before we can take a bite at any cool, sweet data, we must do some serious pre-processing work, which tastes rather like a disappointingly sour lemon...
+
+``` {r results='hide'}
+# Zoom into some variables of interest and do some basic data-cleaning
+# and feature-creation
+# (skipping: male_head_occupation, female_head_occupation, household_composition;
+# because these are reflected by other variables)
+# (skipping: total_spent; don't know what it means)
+benjer <- benjer[, .(quantity, price_paid_deal, price_paid_non_deal,
+                     size1_descr, flavor_descr, formula_descr,
+                   coupon_value, promotion_type,
+                   household_size, household_income, age_and_presence_of_children,
+                   male_head_employment, female_head_employment, male_head_education,
+                   female_head_education, marital_status, race,
+                   hispanic_origin, region, type_of_residence, kitchen_appliances,
+                   tv_items, household_internet_connection)]
+
+# Transform Household Income ordinal values to numeric values (intervals' midpoints)
+household_income_ordinal = c(3, 4, 6, 8, 10, 11, 13, 15, 16, 17, 18, 19, 21, 23, 26,
+                             27, 28, 29, 30)
+household_income_numeric = c(mean(0, 5000), mean(5000-7999), mean(8000, 9999),
+                             mean(10000, 11999), mean(12000, 14999), mean(15000, 19999),
+                             mean(20000, 24999), mean(25000, 29999), mean(30000, 34999),
+                             mean(35000, 39999), mean(40000, 44999), mean(45000, 49999),
+                             mean(50000, 59999), mean(60000, 69999), mean(70000, 99999),
+                             mean(100000, 124999), mean(125000, 149999),
+                             mean(150000, 199999), 200000)
+
+# Fill NA values
+benjer$promotion_type[is.na(benjer$promotion_type)] <- 0
+benjer$tv_items[is.na(benjer$tv_items)] <- 0
+
+# Put Hispanic Origin into Race
+benjer$race[(benjer$race == 4) & (benjer$hispanic_origin == 2)] <- 5
+
+# Create New Input Features
+benjer[, `:=`(price_paid_per_1 = (price_paid_deal + price_paid_non_deal) / quantity,
+              coupon_used = (coupon_value > 0),
+              coupon_value_per_1 = coupon_value / quantity,
+              size1_descr = factor(size1_descr),
+              flavor_descr = factor(flavor_descr),
+              formula_descr = factor(formula_descr),
+              promotion_type = factor(promotion_type, levels = 0 : 4,
+                                      labels = c("NONE", "StoreFeature", "StoreCoupon", 
+                                                 "ManufacturerCoupon", "OtherDeal")),
+              household_income = mapvalues(household_income,
+                                           household_income_ordinal,
+                                           household_income_numeric),
+              children_under_18 = age_and_presence_of_children < 9,
+              male_head_employed_full_time = (male_head_employment == 3),
+              female_head_employed_full_time = (female_head_employment == 3),
+              male_head_graduated_college = (male_head_education >= 5),
+              female_head_graduated_college = (female_head_education >= 5),
+              married = (marital_status == 1),
+              race = factor(race, levels = 1 : 5,
+                            labels = c("White", "Black", "Asian", "Hispanic", "Other")),
+              region = factor(region, levels = 1 : 4,
+                              labels = c("East", "Central", "South", "West")),
+              one_family_house = (type_of_residence == 1),
+              microwave = kitchen_appliances %in% c(1, 4, 5, 7),
+              dishwasher = kitchen_appliances %in% c(2, 4, 6, 7),
+              garbage_disposal = kitchen_appliances %in% c(3, 5, 6, 7),
+              cable_tv = (tv_items > 1),
+              internet = (household_internet_connection == 1))]
+
+# Remove Old Features
+benjer[, c("quantity", "price_paid_deal", "price_paid_non_deal", "coupon_value",
+           "household_size", "age_and_presence_of_children", "male_head_employment",
+           "female_head_employment", "male_head_education", "female_head_education",
+           "marital_status", "hispanic_origin", "type_of_residence", "kitchen_appliances",
+           "tv_items", "household_internet_connection") := NULL]
+```
+
+Phew... over 48 hours have elapsed since I started cleaning the data. Along the way, I managed to annoy a few folks on StackOverflow and report a *data.table* bug.
+
+Now we are ready to look at some colorful plots of the average price paid for one ice-cream against various factors: 
+
+``` {r echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+m <- melt(benjer, id.vars = "region", measure.vars = "price_paid_per_1", na.rm = TRUE)
+dt <- dcast.data.table(m, region ~ variable, fun = mean)
+plot_per_region <- ggplot(dt) +
+  aes(region, price_paid_per_1, fill = region) +
+  geom_bar(stat="identity") +
+  ggtitle("Average B&J Price Paid per Region") +
+  xlab("Region") + ylab("Average Price") +
+  theme(axis.text.x = element_text(colour = "black", size = rel(0.6)),
+        axis.text.y = element_text(colour = "black", size = rel(0.6)),
+        axis.title.x = element_text(colour = "black", size = rel(0.6)),
+        axis.title.y = element_text(colour = "black", size = rel(0.6)),
+        plot.title = element_text(colour = "black", size = rel(0.8)),
+        legend.text = element_text(colour = "black", size = rel(0.6)), 
+        legend.title  = element_text(colour = "black", size = rel(0.6)))
+
+m <- melt(benjer, id.vars = "race", measure.vars = "price_paid_per_1", na.rm = TRUE)
+dt <- dcast.data.table(m, race ~ variable, fun = mean)
+plot_per_race <- ggplot(dt) +
+  aes(race, price_paid_per_1, fill = race) +
+  geom_bar(stat="identity") +
+  ggtitle("Average B&J Price Paid by Race") +
+  xlab("Race") + ylab("Average Price") +
+  theme(axis.text.x = element_text(colour = "black", size = rel(0.6)),
+        axis.text.y = element_text(colour = "black", size = rel(0.6)),
+        axis.title.x = element_text(colour = "black", size = rel(0.6)),
+        axis.title.y = element_text(colour = "black", size = rel(0.6)),
+        plot.title = element_text(colour = "black", size = rel(0.8)),
+        legend.text = element_text(colour = "black", size = rel(0.6)), 
+        legend.title  = element_text(colour = "black", size = rel(0.6)))
+
+m <- melt(benjer, id.vars = "married", measure.vars = "price_paid_per_1", na.rm = TRUE)
+dt <- dcast.data.table(m, married ~ variable, fun = mean)
+plot_per_marital_status <- ggplot(dt) +
+  aes(married, price_paid_per_1, fill = married) +
+  geom_bar(stat="identity") +
+  ggtitle("Average B&J Price Paid by Marital Status") +
+  xlab("Married") + ylab("Average Price") +
+  theme(axis.text.x = element_text(colour = "black", size = rel(0.6)),
+        axis.text.y = element_text(colour = "black", size = rel(0.6)),
+        axis.title.x = element_text(colour = "black", size = rel(0.6)),
+        axis.title.y = element_text(colour = "black", size = rel(0.6)),
+        plot.title = element_text(colour = "black", size = rel(0.8)),
+        legend.text = element_text(colour = "black", size = rel(0.6)), 
+        legend.title	= element_text(colour = "black", size = rel(0.6)))
+
+m <- melt(benjer, id.vars = "children_under_18", measure.vars = "price_paid_per_1", na.rm = TRUE)
+dt <- dcast.data.table(m, children_under_18 ~ variable, fun = mean)
+plot_per_children_status <- ggplot(dt) +
+  aes(children_under_18, price_paid_per_1, fill = children_under_18) +
+  geom_bar(stat="identity") +
+  ggtitle("Average B&J Price Paid with/without Presence of Children") +
+  xlab("Children under 18") + ylab("Average Price") +
+  theme(axis.text.x = element_text(colour = "black", size = rel(0.6)),
+        axis.text.y = element_text(colour = "black", size = rel(0.6)),
+        axis.title.x = element_text(colour = "black", size = rel(0.6)),
+        axis.title.y = element_text(colour = "black", size = rel(0.6)),
+        plot.title = element_text(colour = "black", size = rel(0.8)),
+        legend.text = element_text(colour = "black", size = rel(0.6)), 
+        legend.title  = element_text(colour = "black", size = rel(0.6)))
+
+plot_per_household_income <- ggplot(benjer) +
+  aes(household_income, price_paid_per_1) +
+  geom_point() + geom_smooth() +
+  ggtitle("Average B&J Price Paid vs. Household Income") +
+  xlab("Household Income") + ylab("Average Price") +
+  theme(axis.text.x = element_text(colour = "black", size = rel(0.6)),
+        axis.text.y = element_text(colour = "black", size = rel(0.6)),
+        axis.title.x = element_text(colour = "black", size = rel(0.6)),
+        axis.title.y = element_text(colour = "black", size = rel(0.6)),
+        plot.title = element_text(colour = "black", size = rel(0.8)),
+        legend.text = element_text(colour = "black", size = rel(0.6)), 
+        legend.title  = element_text(colour = "black", size = rel(0.6)))
+
+m <- melt(benjer, id.vars = "promotion_type", measure.vars = "price_paid_per_1", na.rm = TRUE)
+dt <- dcast.data.table(m, promotion_type ~ variable, fun = mean)
+plot_per_promotion_type <- ggplot(dt) +
+  aes(promotion_type, price_paid_per_1, fill = promotion_type) +
+  geom_bar(stat="identity") +
+  ggtitle("Average B&J Price Paid vs. Promotion Method") +
+  xlab("Promotion Type") + ylab("Average Price") +
+  theme(axis.text.x = element_text(colour = "black", size = rel(0.6)),
+        axis.text.y = element_text(colour = "black", size = rel(0.6)),
+        axis.title.x = element_text(colour = "black", size = rel(0.6)),
+        axis.title.y = element_text(colour = "black", size = rel(0.6)),
+        plot.title = element_text(colour = "black", size = rel(0.8)),
+        legend.text = element_text(colour = "black", size = rel(0.6)), 
+        legend.title  = element_text(colour = "black", size = rel(0.6)))
+
+plot_per_coupon_value <- ggplot(benjer[coupon_used == TRUE]) +
+  aes(x = coupon_value_per_1, y = price_paid_per_1) +
+  geom_point() + geom_smooth(method = "lm", formula = y ~ x - 1) +
+  ggtitle("Average B&J Price Paid vs. Coupon Value") +
+  xlab("Coupon Value") + ylab("Average Price") +
+  theme(axis.text.x = element_text(colour = "black", size = rel(0.6)),
+        axis.text.y = element_text(colour = "black", size = rel(0.6)),
+        axis.title.x = element_text(colour = "black", size = rel(0.6)),
+        axis.title.y = element_text(colour = "black", size = rel(0.6)),
+        plot.title = element_text(colour = "black", size = rel(0.8)),
+        legend.text = element_text(colour = "black", size = rel(0.6)), 
+        legend.title  = element_text(colour = "black", size = rel(0.6)))
+
+grid.arrange(plot_per_region, plot_per_race,
+             plot_per_marital_status, plot_per_children_status,
+             plot_per_household_income, ncol = 2)
+```
+
+From a first look at the above 5 plots there seems to be little difference among the various ways to split the data. It seems, rather uninterestingly, *when people have decided that they want ice-creams at Ben & Jerry's*, they are willing to pay pretty much the same amount on average, regardless of their U.S. home region, their races, whether they are married, whether they have kids, or how much money they make. Americans seem to appreciate Ben & Jerry's pretty uniformly, and they don't eat so many ice-creams that it becomes any budgetary issue worth worrying about.
+
+Regarding the effects of promotional methods, we can review the below 2 plots:
+
+``` {r echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
+grid.arrange(plot_per_promotion_type, plot_per_coupon_value, ncol = 2)
+```
+
+These plots suggest coupons seem to be a bit better than other promotional methods at getting people to spend more.
+
+
+
+### 2. REGRESSION ANALYSIS
+
+We fit the below regression model to detect which variables are statistically significant in affecting the average price paid per ice-cream:
+
+``` {r warning=FALSE}
+glm_model <- train(log(1 + price_paid_per_1) ~
+                     log(1 + coupon_value_per_1) + promotion_type +
+                     log(1 + household_income) +
+                     male_head_employed_full_time +
+                     female_head_employed_full_time +
+                     male_head_graduated_college +
+                     female_head_graduated_college +
+                     married + children_under_18 +
+                     one_family_house + microwave + dishwasher +
+                     garbage_disposal + cable_tv + internet +
+                     race + region +
+                     size1_descr + flavor_descr + formula_descr,
+                   data = copy(benjer),
+                   method = "glm")                                 
+results <- coef(summary(glm_model$finalModel))[, c("Estimate", "Pr(>|t|)")]
+results
+```
+
+The only clear, interpretable result from this analysis is that coupons are statistically significant. For other variables, even though we see some pretty small p-values,  the signs of the coefficents do not lend themselves for very meaningful interpretation.
+
+
+### 3. MANAGING THE FALSE DISCOVERY RATE (FDR)
+
+```{r warning=FALSE, message=FALSE}
+pvals <- results[, 2]
+source("fdr.R")
+alpha = fdr_cut(pvals, 0.05, plotit=TRUE)
+```
+
+With the above model, in order to guarantee an expected False Discovery Rate (FDR) of at most 5%, we need to use the cut-off threshold of **`r alpha`** for the p-values. We need to pay attention to the FDR in models that have many covariates such as this one to mitigate the probability of deciding that a certain variable is statistically significant when it is in fact not.
+
+With this cut-off, the variables that are statistically significant are:
+
+```{r}
+results[pvals < alpha, ]
+```
+
+The few *flavor_decr* variables remaining in this list are highly suspicious and don't look like true discoveries, given that most other *flavor_decr* variables failed to satisfy the significance test with the above threshold. The purpose of controlling the FDR is exactly to minimize the number of false discoveries like these.
+
+Even within the subset of variables that are deemed to be statistically significant with the above threshold, I feel many of them are false discoveries and am hesitant to read too much into them.
+
+Overall, I think the following are likely to be true discoveries:
+
+* The use of coupons; 
+* Household income; and
+* Whether or not the family heads are college graduates
+
+```{r echo=FALSE}
+stopCluster(cl)
+```

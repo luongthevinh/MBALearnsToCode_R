@@ -1,0 +1,168 @@
+---
+title: 'Village Connections: Will You Borrow From Your Neighbor?'
+output: pdf_document
+fontsize: 12
+geometry: margin=1in
+---
+(Student: Vinh Luong - 442069)
+
+
+
+``` {r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Set workding directory
+setwd('C:/Cloud/Box Sync/WORK/Chicago Booth/COURSES/3. Big Data/Assignments/04. Micro-Finance')
+# Load key packages
+library(caret)
+library(doParallel)
+library(data.table)
+library(plyr)
+library(reshape2)
+library(ggplot2)
+library(gridExtra)
+library(gamlr)
+library(doParallel)
+library(igraph)
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+getDoParWorkers()
+```
+
+```{r echo=FALSE, results='hide'}
+## microfinance network 
+## data from BANERJEE, CHANDRASEKHAR, DUFLO, JACKSON 2012
+
+## data on 8622 households
+hh <- read.csv("microfi_households.csv", row.names="hh")
+hh$village <- factor(hh$village)
+
+## We'll kick off with a bunch of network stuff.
+## This will be covered in more detail in lecture 6.
+## get igraph off of CRAN if you don't have it
+## install.packages("igraph")
+## this is a tool for network analysis
+## (see http://igraph.sourceforge.net/)
+
+edges <- read.table("microfi_edges.txt", colClasses="character")
+## edges holds connections between the household ids
+hhnet <- graph.edgelist(as.matrix(edges))
+hhnet <- as.undirected(hhnet) # two-way connections.
+
+## igraph is all about plotting.  
+V(hhnet) ## our 8000+ household vertices
+## Each vertex (node) has some attributes, and we can add more.
+V(hhnet)$village <- as.character(hh[V(hhnet),'village'])
+## we'll color them by village membership
+vilcol <- rainbow(nlevels(hh$village))
+names(vilcol) <- levels(hh$village)
+V(hhnet)$color = vilcol[V(hhnet)$village]
+## drop HH labels from plot
+V(hhnet)$label=NA
+
+# graph plots try to force distances proportional to connectivity
+# imagine nodes connected by elastic bands that you are pulling apart
+# The graphs can take a very long time, but I've found
+# edge.curved=FALSE speeds things up a lot.  Not sure why.
+
+## we'll use induced.subgraph and plot a couple villages 
+village1 <- induced.subgraph(hhnet, v=which(V(hhnet)$village=="1"))
+village33 <- induced.subgraph(hhnet, v=which(V(hhnet)$village=="33"))
+
+# vertex.size=3 is small.  default is 15
+#plot(village1, vertex.size=3, edge.curved=FALSE)
+#plot(village33, vertex.size=3, edge.curved=FALSE)
+
+######  now, on to your homework stuff
+
+## match id's; I call these 'zebras' because they are like crosswalks
+zebra <- match(rownames(hh), V(hhnet)$name)
+
+## calculate the `degree' of each hh: 
+##  number of commerce/friend/family connections
+degree <- degree(hhnet)[zebra]
+names(degree) <- rownames(hh)
+degree[is.na(degree)] <- 0 # unconnected houses, not in our graph
+```
+
+
+
+### 1. TRANSFORMATION OF DEGREES TO LOG SCALE
+
+First of all we observe that the *degree* variable seems to display an exponential distribution:
+```{r}
+hist(degree)
+```
+
+It is hence reasonable to transform this variable to the log scale and interprete its effects multiplicatively instead of additively:
+```{r}
+log_degree <- log(degree + 1)
+```
+
+
+### 2. REGRESSION OF LOG(DEGREE) ON DEPENDENT VARIABLES
+
+We now run a LASSO regression of the *log(degree)* variable on the dependent variables:
+```{r}
+m <- model.matrix(loan ~ ., data=hh)
+m <- m[, -1] #exclude intercept
+
+# LASSO REGRESSION
+log_degree_regression <- gamlr(m, log_degree,
+  family="gaussian", standardize=TRUE)
+
+fitted_values <- as.vector(predict(log_degree_regression, m))
+```
+The correlation between the fitted values and the *log_degree* variable is low, only `r cor(fitted_values, log_degree)`, suggesting that there is a significant potential treatment effect contained in *log_degree*.
+
+
+### 3. REGRESSION TO DETECT TREATMENT EFFECT
+
+We now run a LASSO regression of the *loan* variable on the dependent variables including the *log(degree)* variable and the fitted values from the regression in Section 2. We do not penalize the fitted values in order to fully capture the treatment effect:
+```{r}
+m1 <- cbind(log_degree, fitted_values, m)
+loan_regression_1 <- gamlr(m1, hh$loan,
+                         free = 2,
+                         family = 'binomial', standardized=TRUE)
+bAICc1 <- coef(loan_regression_1)
+bAICc1
+```
+The above results suggest that *log(degree)* has a positive treatment effect (coefficient `r bAICc1['log_degree', ]`) on the odds of a household getting a loan.
+
+
+### 4. NAIVE LASSO
+
+Let's compare the above results with those from a naive LASSO regression of the *loan* variable on the dependent variables and the *log(degree)*, but without including the fitted values:
+```{r}
+m2 <- cbind(log_degree, m)
+loan_regression_2 <- gamlr(m2, hh$loan,
+                         family = 'binomial', standardized=TRUE)
+bAICc2 <- coef(loan_regression_2)
+bAICc2
+```
+The coefficent `r bAICc2['log_degree', ]` is very similar to what we got in Section 3. This is perhaps because the variable *log(degree)* is largely uncorrelated with the other dependent variables and hence the treatment effect is largely unaffected even if we do not include the fitted values.
+
+
+### 5. BOOTSTRAPPING
+
+Let's now quantify the uncertainty in the treatment effect size by bootstrapping:
+
+```{r}
+gamma <- c()
+n <- nrow(m)
+n
+for(b in 1:300)
+{
+  ib <- sample(1 : n, n, replace=TRUE)
+  m1 <- cbind(log_degree, fitted_values, m)[ib, ]
+  loan_regression_1 <- gamlr(m1, hh$loan[ib],
+                             free = 2,                              
+                              family = 'binomial', standardized=TRUE)
+  gamma <- c(gamma,coef(loan_regression_1)['log_degree', ])
+}
+hist(gamma)
+```
+
+The bootstrap suggests that the size of the treatment effect has a mean of about `r mean(gamma)` and standard deviation of about `r sd(gamma)`.
+
+```{r echo=FALSE}
+stopCluster(cl)
+```

@@ -1,0 +1,291 @@
+---
+title: 'Hockey players: who is doing a good job?'
+output: pdf_document
+fontsize: 12
+geometry: margin=1in
+---
+(Student: Vinh Luong - 442069)
+
+
+
+### 1. PRELIM RESULTS FROM LASSO REGRESSION ON HOCKEY DATA
+
+``` {r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Set workding directory
+setwd('C:/Cloud/Box Sync/WORK/Chicago Booth/COURSES/3. Big Data/Assignments/Week 03')
+# Load key packages
+library(caret)
+library(doParallel)
+library(data.table)
+library(plyr)
+library(reshape2)
+library(ggplot2)
+library(gridExtra)
+library(gamlr)
+library(doParallel)
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+getDoParWorkers()
+```
+
+First of all we load the **hockey** data set from the *gamlr* package, and run a LASSO regression of the *homegoal* variable on the *config*, *team* and *player* variables:
+
+```{r}
+data(hockey) # load the data
+
+# Combine the covariates all together
+x <- cBind(config, team, player) # cBind binds together sparse matrices
+number_of_players <- ncol(player)
+
+# build 'y': home vs away, binary response
+y <- goal$homegoal
+
+n <- nrow(x)
+y_broadcast <- y
+y_broadcast[y_broadcast == 0] = -1
+y_broadcast <- matrix(rep(y_broadcast, number_of_players), ncol=number_of_players)
+
+number_of_goals_involving_player <- colSums(abs(player))
+number_of_goals_for_player <-
+  colSums((y_broadcast > 0) * (player > 0) + (y_broadcast < 0) * (player < 0))
+number_of_goals_against_player <-
+  colSums((y_broadcast < 0) * (player > 0) + (y_broadcast > 0) * (player < 0))
+
+# LASSO regression
+nhlreg <- gamlr(x, y, 
+  free=1:(ncol(config)+ncol(team)), ## free denotes unpenalized columns
+	family="binomial", standardize=FALSE)
+
+## coefficients (grab only the players)
+# AICc selection 
+bAICc <- coef(nhlreg)[colnames(player),]
+
+# Build info data frame
+bAICc_data_frame <- data.frame(bAICc, row.names=names(bAICc))
+bAICc_data_frame$goals_involved <- number_of_goals_involving_player
+bAICc_data_frame$goals_for <- number_of_goals_for_player
+bAICc_data_frame$goals_against <- number_of_goals_against_player
+increasing_order <- order(bAICc)
+decreasing_order <- order(bAICc, decreasing=TRUE)
+```
+
+The top 5 and bottom 5 players in the $\beta$ metric are as follows:
+
+TOP 5:
+```{r echo=FALSE}
+bAICc_data_frame[decreasing_order[1:5], ]
+```
+
+BOTTOM 5:
+```{r echo=FALSE}
+bAICc_data_frame[increasing_order[1:5], ]
+```
+
+These results seem very intuitive. The "best" and "worst" players identified by this methodology played a lot and were on ice when many goals happened, and each player either experienced a majority of goals for his team or a majority of goals against his team.
+
+
+### 2. EFFECTS OF STANDARDIZING COVARIATES
+
+In the above regression, the covariates are not standardized to have equal, unitary standard deviations. In other words, the covariates are not on the same scale. This is usually problematic when applying regularization on the weights because variables with very large scales tend to have small weights, which will only "get noticed" by the weight penalization at a very large weight cost $\lambda$. The consequence is that large unstandardized variables will tend to survive regularization longer than small unstandardized variables, and this will often lead to misleading results.
+
+In the context of the current regression, however, we should **not** standardize the *player* variables, or in fact any variables, because the variables are all binary / categorical in nature and hence already on the same kind of scale. For example each *player* variable is a binary interaction between two binary variables, namely *player on or off ice* x *player home or away*.
+
+If we do further standardize the these variables, we encounter some pretty unconvining results below:
+
+```{r}
+nhlreg_standardized <- gamlr(x, y, 
+  free=1:(ncol(config)+ncol(team)), ## free denotes unpenalized columns
+  family="binomial", standardize=TRUE)
+
+## coefficients (grab only the players)
+# AICc selection 
+bAICc <- coef(nhlreg_standardized)[colnames(player),]
+# Build info data frame
+bAICc_data_frame <- data.frame(bAICc, row.names=names(bAICc))
+bAICc_data_frame$goals_involved <- number_of_goals_involving_player
+bAICc_data_frame$goals_for <- number_of_goals_for_player
+bAICc_data_frame$goals_against <- number_of_goals_against_player
+increasing_order <- order(bAICc)
+decreasing_order <- order(bAICc, decreasing=TRUE)
+```
+
+Let's look at top and bottom performers in this metric:
+
+* TOP 5:
+```{r echo=FALSE}
+bAICc_data_frame[decreasing_order[1:5], ]
+```
+
+* BOTTOM 5:
+```{r echo=FALSE}
+bAICc_data_frame[increasing_order[1:5], ]
+```
+
+The "best" and "worst" players now again also have either a majority of goals for them or a majority of goals against them, but they did not get involved in many goals in total - i.e. they did not feature a great deal in the data set. It is difficult hence to regard such results as producing a reliable performance metric on players.
+
+
+
+### 3. COMPARISON AMONG MODEL SELECTION METHODS
+
+We'll compare various model selection methods, from information criteria AIC, AICc and BIC to selection by cross-validation. First, we run the below cross-validated GAMLR model:
+
+```{r}
+cv.nhlreg <- cv.gamlr(x, y, 
+  free=1:(ncol(config)+ncol(team)), ## free denotes unpenalized columns
+  family="binomial", standardize=FALSE, cl=cl)
+```
+
+We then plot how the various model selection methods play out at different levels of (the log of) the weight penalty $\lambda$:
+
+```{r echo=FALSE}
+#plot CV results and the various IC
+par(mfrow=c(1,2))
+log_lambda <- log(nhlreg$lambda) ## the sequence of lambdas
+
+plot(cv.nhlreg)
+
+plot(log_lambda, BIC(nhlreg)/n, pch=21, bg="green",
+     xlab="log lambda", ylab="IC/n", ylim = c(1.15, 1.23))
+abline(v=log_lambda[which.min(AIC(nhlreg))], col="orange", lty=3)
+abline(v=log_lambda[which.min(BIC(nhlreg))], col="green", lty=3)
+abline(v=log_lambda[which.min(AICc(nhlreg))], col="black", lty=3)
+points(log_lambda, AIC(nhlreg)/n, pch=21, bg="orange")
+points(log_lambda, AICc(nhlreg)/n, pch=21, bg="black")
+legend("topleft", bty="n",
+  fill=c("black","orange","green"),legend=c("AICc","AIC","BIC"))
+
+# all metrics, together in a path plot.
+par(mfrow=c(1,1))
+plot(nhlreg, col="grey")
+abline(v=log_lambda[which.min(AICc(nhlreg))], col="black", lty=2)
+abline(v=log_lambda[which.min(AIC(nhlreg))], col="orange", lty=2)
+abline(v=log_lambda[which.min(BIC(nhlreg))], col="green", lty=2)
+abline(v=log(cv.nhlreg$lambda.min), col="blue", lty=2)
+abline(v=log(cv.nhlreg$lambda.1se), col="purple", lty=2)
+legend("topright", bty="n", lwd=1, 
+	col=c("black","orange","green","blue","purple"),
+	legend=c("AICc","AIC","BIC","CV.min","CV.1se"))
+```
+
+From the above plots, we see that the model selection methods are increasingly strict in the following order:
+
+* AIC / AICc (here the same model minimizes the AIC and the AICc)
+* CV.min
+* CV.1se
+* BIC: in this case, BIC's penalty is so severe that under BIC, practically any model is worse than the null model
+
+
+
+### 4. PLAYER-ONLY MODEL
+
+We'll now run a LASSO regression of the *homegoal* variable on the *player* variables only:
+
+```{r}
+x <- player
+
+nhlreg_player <- gamlr(x, y, 
+  free=1:(ncol(config)+ncol(team)), ## free denotes unpenalized columns
+  family="binomial", standardize=FALSE, nlambda=1000, lambda.min.ratio = 0.00001)
+
+cv.nhlreg_player <- cv.gamlr(x, y, 
+  free=1:(ncol(config)+ncol(team)), ## free denotes unpenalized columns
+  family="binomial", standardize=FALSE, nlambda=1000, lambda.min.ratio = 0.00001, cl=cl)
+```
+
+```{r echo=FALSE}
+par(mfrow=c(1,2))
+log_lambda <- log(nhlreg_player$lambda) ## the sequence of lambdas
+
+plot(cv.nhlreg_player)
+
+plot(log_lambda, AIC(nhlreg_player)/n, 
+  xlab="log lambda", ylab="IC/n", pch=21, bg="orange", ylim = c(1.15, 1.4))
+abline(v=log_lambda[which.min(AIC(nhlreg_player))], col="orange", lty=3)
+abline(v=log_lambda[which.min(BIC(nhlreg_player))], col="green", lty=3)
+abline(v=log_lambda[which.min(AICc(nhlreg_player))], col="black", lty=3)
+points(log_lambda, BIC(nhlreg_player)/n, pch=21, bg="green")
+points(log_lambda, AICc(nhlreg_player)/n, pch=21, bg="black")
+legend("topleft", bty="n",
+  fill=c("black","orange","green"),legend=c("AICc","AIC","BIC"))
+
+# all metrics, together in a path plot.
+par(mfrow=c(1,1))
+plot(nhlreg_player, col="grey")
+abline(v=log_lambda[which.min(AICc(nhlreg_player))], col="black", lty=2)
+abline(v=log_lambda[which.min(AIC(nhlreg_player))], col="orange", lty=2)
+abline(v=log_lambda[which.min(BIC(nhlreg_player))], col="green", lty=2)
+abline(v=log(cv.nhlreg_player$lambda.min), col="blue", lty=2)
+abline(v=log(cv.nhlreg_player$lambda.1se), col="purple", lty=2)
+legend("topright", bty="n", lwd=1, 
+	col=c("black","orange","green","blue","purple"),
+	legend=c("AICc","AIC","BIC","CV.min","CV.1se"))
+```
+
+Below is a comprehensive comparison of the the 8 models produced so far (4 on the *config*, *team* and *player* variables, and 4 on the *player* variables only). The comparison criteria are Interpretability, Deviance / N, AICc / N, AIC / N and BIC / N. 
+
+```{r echo=FALSE}
+t <- data.frame(INTERPRETABILITY=c(rep('difficult', 5), rep('easy', 5)),
+                DEVIANCE=rep(0, 10),
+                AICc=rep(NA, 10),
+                AIC=rep(NA, 10),
+                BIC=rep(NA, 10),
+                row.names=c('Full Model, AICc', 'Full Model, AIC', 
+                            'Full Model, CV.min', 'Full Model, CV.1se',
+                            'Full Model, BIC',
+                            'Player Model, AICc', 'Player Model, AIC', 
+                            'Player Model, CV.min', 'Player Model, CV.1se',
+                            'Player Model, BIC'))
+t['Full Model, AICc', 'DEVIANCE'] = deviance(nhlreg)[which.min(AICc(nhlreg))] / n
+t['Full Model, AIC', 'DEVIANCE'] = deviance(nhlreg)[which.min(AIC(nhlreg))] / n
+t['Full Model, BIC', 'DEVIANCE'] = deviance(nhlreg)[which.min(BIC(nhlreg))] / n
+t['Full Model, CV.min', 'DEVIANCE'] = deviance(cv.nhlreg$gamlr)[cv.nhlreg$seg.min] / n
+t['Full Model, CV.1se', 'DEVIANCE'] = deviance(cv.nhlreg$gamlr)[cv.nhlreg$seg.1se] / n
+t['Player Model, AICc', 'DEVIANCE'] = deviance(nhlreg_player)[which.min(AICc(nhlreg_player))] / n
+t['Player Model, AIC', 'DEVIANCE'] = deviance(nhlreg_player)[which.min(AIC(nhlreg_player))] / n
+t['Player Model, BIC', 'DEVIANCE'] = deviance(nhlreg_player)[which.min(BIC(nhlreg_player))] / n
+t['Player Model, CV.min', 'DEVIANCE'] = deviance(cv.nhlreg_player$gamlr)[cv.nhlreg_player$seg.min] / n
+t['Player Model, CV.1se', 'DEVIANCE'] = deviance(cv.nhlreg_player$gamlr)[cv.nhlreg_player$seg.1se] / n
+
+t['Full Model, AICc', 'AICc'] = AICc(nhlreg)[which.min(AICc(nhlreg))] / n
+t['Full Model, AIC', 'AICc'] = AICc(nhlreg)[which.min(AIC(nhlreg))] / n
+t['Full Model, BIC', 'AICc'] = AICc(nhlreg)[which.min(BIC(nhlreg))] / n
+t['Full Model, CV.min', 'AICc'] = AICc(cv.nhlreg$gamlr)[cv.nhlreg$seg.min] / n
+t['Full Model, CV.1se', 'AICc'] = AICc(cv.nhlreg$gamlr)[cv.nhlreg$seg.1se] / n
+t['Player Model, AICc', 'AICc'] = AICc(nhlreg_player)[which.min(AICc(nhlreg_player))] / n
+t['Player Model, AIC', 'AICc'] = AICc(nhlreg_player)[which.min(AIC(nhlreg_player))] / n
+t['Player Model, BIC', 'AICc'] = AICc(nhlreg_player)[which.min(BIC(nhlreg_player))] / n
+t['Player Model, CV.min', 'AICc'] = AICc(cv.nhlreg_player$gamlr)[cv.nhlreg_player$seg.min] / n
+t['Player Model, CV.1se', 'AICc'] = AICc(cv.nhlreg_player$gamlr)[cv.nhlreg_player$seg.1se] / n
+
+t['Full Model, AICc', 'AIC'] = AIC(nhlreg)[which.min(AICc(nhlreg))] / n
+t['Full Model, AIC', 'AIC'] = AIC(nhlreg)[which.min(AIC(nhlreg))] / n
+t['Full Model, BIC', 'AIC'] = AIC(nhlreg)[which.min(BIC(nhlreg))] / n
+t['Full Model, CV.min', 'AIC'] = AIC(cv.nhlreg$gamlr)[cv.nhlreg$seg.min] / n
+t['Full Model, CV.1se', 'AIC'] = AIC(cv.nhlreg$gamlr)[cv.nhlreg$seg.1se] / n
+t['Player Model, AICc', 'AIC'] = AIC(nhlreg_player)[which.min(AICc(nhlreg_player))] / n
+t['Player Model, AIC', 'AIC'] = AIC(nhlreg_player)[which.min(AIC(nhlreg_player))] / n
+t['Player Model, BIC', 'AIC'] = AIC(nhlreg_player)[which.min(BIC(nhlreg_player))] / n
+t['Player Model, CV.min', 'AIC'] = AIC(cv.nhlreg_player$gamlr)[cv.nhlreg_player$seg.min] / n
+t['Player Model, CV.1se', 'AIC'] = AIC(cv.nhlreg_player$gamlr)[cv.nhlreg_player$seg.1se] / n
+
+t['Full Model, AICc', 'BIC'] = BIC(nhlreg)[which.min(AICc(nhlreg))] / n
+t['Full Model, AIC', 'BIC'] = BIC(nhlreg)[which.min(AIC(nhlreg))] / n
+t['Full Model, BIC', 'BIC'] = BIC(nhlreg)[which.min(BIC(nhlreg))] / n
+t['Full Model, CV.min', 'BIC'] = BIC(cv.nhlreg$gamlr)[cv.nhlreg$seg.min] / n
+t['Full Model, CV.1se', 'BIC'] = BIC(cv.nhlreg$gamlr)[cv.nhlreg$seg.1se] / n
+t['Player Model, AICc', 'BIC'] = BIC(nhlreg_player)[which.min(AICc(nhlreg_player))] / n
+t['Player Model, AIC', 'BIC'] = BIC(nhlreg_player)[which.min(AIC(nhlreg_player))] / n
+t['Player Model, BIC', 'BIC'] = BIC(nhlreg_player)[which.min(BIC(nhlreg_player))] / n
+t['Player Model, CV.min', 'BIC'] = BIC(cv.nhlreg_player$gamlr)[cv.nhlreg_player$seg.min] / n
+t['Player Model, CV.1se', 'BIC'] = BIC(cv.nhlreg_player$gamlr)[cv.nhlreg_player$seg.1se] / n
+
+t
+```
+
+The comparison among these models is pretty mixed, in a sense that there is not a clear overall "winner". One thing that is more obvious to note is that BIC penalizes the coefficients too strictly and seems to result in under-fitting. Other than that, Which model is best depends on which metric among Deviance, AICc and AIC we use to evaluate the models.
+
+With a gun to my head forcing me to choose one model, I would go for a more easy-to-understand player-only model selected by AICc.
+
+```{r echo=FALSE}
+stopCluster(cl)
+```
