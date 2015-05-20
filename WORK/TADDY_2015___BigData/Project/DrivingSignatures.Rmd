@@ -1,0 +1,46 @@
+---
+title: 'Driving Signatures: Who''s Behind the Steering Wheel?'
+output: pdf_document
+fontsize: 12
+geometry: margin=0.5in
+---
+(Student: Vinh Luong - 442069)
+
+
+``` {r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Set workding directory
+setwd("C:/Cloud/Dropbox/MBALearnsToCode_R/WORK/TADDY_2015___BigData/Project")
+data_folder_path <- "C:/Cloud/Dropbox/MBALearnsToCode_Data/Kaggle/AXA Driver Telematics Analysis/drivers"
+source("Data_and_Features.R")
+source("Visualization.R")
+# Load key packages
+library(data.table)
+library(plyr)
+library(reshape2)
+library(ggplot2)
+library(caret)
+library(gamlr)
+library(lubridate)
+# Start parallel computing cluster over multi cores
+library(doParallel)
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+getDoParWorkers()
+```
+
+```{r}
+drivers <- list_drivers(data_folder_path)
+d <- read_driver_trip(data_folder_path, 1, 136)
+d <- calc_trip_data(d)
+bad_trip_data_indices(d)
+#plot_trip(d, 2, color="blue")
+d_clean <- clean_velocity_data(d, 277)
+plot_trip(d_clean[270:359], 2, color="blue")
+d_clean[300:359]
+```
+
+
+
+```{r echo=FALSE}
+stopCluster(cl)
+```
