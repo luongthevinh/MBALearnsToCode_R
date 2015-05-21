@@ -76,6 +76,7 @@ install.packages(c(
 
 #'stringr', 'mime', 'stabs', 'texreg', 'relimp', 'brglm', 'minqa', 'sendplot', 'd3Network',
 #'ggm', 'dichromat', , 'munsell', 'labeling', 
+#''intervals', 'R.cache', 'StanHeaders', 'TTR', 'spacetime', 'NLP', 'pmml', 'arulesViz', 'gpclib', 'forward', 'brglm', 'prefmod', 'alr4', 'oz', 'RDCOMClient', 'rversions', 'git2r', 'BH', 'RMySQL', 'stringi', 'intergraph', 'scagnostics', 'tnet', 'relimp', 'RGraphics', 'mime', 'base64enc', 'curl', 'R.rsp', 'zipcode', 'FNN', 'yaImpute', 'minqa', 'RcppEigen', 'PKPDmodels', 'MEMSS', 'mlmRev', 'OpenMx', 'stabs', 'sn', 'texreg', 'quantmod', 'd3Network', 'ggm', 'RSVGTipsDevice', 'sendplot', 'ncdf4', 'rbenchmark', 'highlight', 'pkgKitten', 'gstat', 'goftest', 'cmprsk', 'R2wd', 'tm', 'fts'
 
 #'intervals', 'rex', 'crayon', 'stringdist', 'spacetime', 'FNN', 'prefmod', 'alr4', 'lintr',
 #''lazyeval', 'RMySQL', 'Lahman', 'nycflights13', 'TeachingDemos',

@@ -1,3 +1,8 @@
+library(data.table)
+library(plyr)
+options(expressions = 500000)
+
+
 list_drivers <- function(data_folder_path)
 {
   list.dirs(path=data_folder_path, full.names=FALSE, recursive=FALSE)
@@ -120,81 +125,92 @@ bad_trip_data_indices <- function(trip_data_table)
 }
 
 
-clean_velocity_data <- function(trip_data_table, bad_velocity_data_row_num,
-                                num_rows_before_after = 3)
-{
-  library(data.table)
-  library(plyr)
-  
-  before <- trip_data_table[(bad_velocity_data_row_num - num_rows_before_after) : 
-                              (bad_velocity_data_row_num - 1)]
-  after <- trip_data_table[(bad_velocity_data_row_num + 1): 
-                             (bad_velocity_data_row_num + num_rows_before_after)]
-  
-  xy_before <- unlist(before[num_rows_before_after, .(x, y)])
-  xy_after <- unlist(after[1, .(x, y)])
-  euclidean_distance <- sum((xy_before - xy_after) ^ 2) ^ 0.5
-  
-  angle_before <- mean(before$angle)
-  angle_after <- mean(after$angle)
-  angular_difference <- angular_differences(angle_after, angle_before)
-  
-  arc_length <- circular_arc_length(euclidean_distance, angular_difference)
-  
-  velocity_before <- mean(before$velocity)
-  velocity_after <- mean(after$velocity)
-  mean_velocity <- (velocity_before + velocity_after) / 2
-  
-  estimated_num_seconds <- round(arc_length / mean_velocity)
-  
-  velocity_change_per_second <- (velocity_after - velocity_before) / estimated_num_seconds
-  angular_change_per_second <- angular_difference / estimated_num_seconds
-  
-  estimated_num_seconds_to_derive <- estimated_num_seconds - 1
-  derived_x <- rep(NA, estimated_num_seconds_to_derive)
-  derived_y <- rep(NA, estimated_num_seconds_to_derive)
-  derived_velocities <- rep(NA, estimated_num_seconds_to_derive)
-  derived_angles <- rep(NA, estimated_num_seconds_to_derive)
-  derived_x[1] <- xy_before[1]
-  derived_y[1] <- xy_before[2]
-  derived_velocities[1] <- velocity_before
-  derived_angles[1] <- angle_before  
-  for (t in 2 : estimated_num_seconds_to_derive)
-  {
-    derived_velocities[t] <- derived_velocities[t - 1] + velocity_change_per_second
-    derived_angles[t] <- derived_angles[t - 1] + angular_change_per_second
-    derived_x[t] <- derived_x[t - 1] + derived_velocities[t] * cos(derived_angles[t])
-    derived_y[t] <- derived_y[t - 1] + derived_velocities[t] * sin(derived_angles[t])
+clean_velocity_data <- function(trip_data_table, num_rows_before_after = 3) {
+  while (!all(trip_data_table$velocity_check)) {
+    bad_velocity_data_row_num = which(!trip_data_table$velocity_check)[1]
+    before <- trip_data_table[(bad_velocity_data_row_num - num_rows_before_after) : 
+                                (bad_velocity_data_row_num - 1)]
+    after <- trip_data_table[(bad_velocity_data_row_num + 1): 
+                               (bad_velocity_data_row_num + num_rows_before_after)]
+    
+    d <- before[num_rows_before_after, .(x, y, velocity, angle)]
+    x_after <- trip_data_table[bad_velocity_data_row_num, x]
+    y_after <- trip_data_table[bad_velocity_data_row_num, y]
+    velocity_after <- mean(after$velocity)
+    angle_after <- mean(after$angle)
+    n = 1
+    interpolated_next_xy_velocity_angle <-
+      interpolate_next_xy_velocity_angle(d$x, d$y, d$velocity, d$angle,
+                                         x_after, y_after, velocity_after, angle_after)
+    while (!is.null(interpolated_next_xy_velocity_angle)) {
+      d <- rbind(d, interpolated_next_xy_velocity_angle)
+      n <- n + 1
+      next_d <- d[n]
+      interpolated_next_xy_velocity_angle <-
+        interpolate_next_xy_velocity_angle(next_d$x, next_d$y, next_d$velocity, next_d$angle,
+                                           x_after, y_after, velocity_after, angle_after) 
+    }
+    
+    d <- data.table(rbind.fill(before, d[-1],
+                               trip_data_table[bad_velocity_data_row_num], after))
+    
+    d <- calc_trip_data(d)
+    num_rows <- nrow(d)
+    d <- d[-c(1 : num_rows_before_after, (num_rows - num_rows_before_after + 1) : num_rows)]
+    
+    trip_data_table <- rbind(trip_data_table[1 : (bad_velocity_data_row_num - 1)],
+                             d, trip_data_table[(bad_velocity_data_row_num + 1) : 
+                                                  nrow(trip_data_table)])
   }
-  
-  d <- data.table(x = derived_x[2 : estimated_num_seconds_to_derive],
-                  y = derived_y[2 : estimated_num_seconds_to_derive])
-  d <- data.table(rbind.fill(before, d, trip_data_table[bad_velocity_data_row_num], after))
-  d <- calc_trip_data(d)
-  print(d)
-  d <- d[(num_rows_before_after + 1) : 
-           (num_rows_before_after + estimated_num_seconds_to_derive - 1)]
-  
-  rbind(trip_data_table[1 : (bad_velocity_data_row_num - 1)], d,
-        trip_data_table[bad_velocity_data_row_num : nrow(trip_data_table)])  
+  trip_data_table
 }
 
 
-#clean_trip_data_table(trip_data_table):
-#  return trip_data_table
-
-
-
-angular_differences <- function(angles_1, angles_2)
-{
-  differences <- angles_1 - angles_2
-  atan2(sin(differences), cos(differences))
+angular_difference <- function(from_angle, to_angle) {
+  difference <- to_angle - from_angle
+  atan2(sin(difference), cos(difference))
 }
 
 
-
-circular_arc_length <- function(euclidean_distance_between_ends, angle_between_tangents)
-{
+circular_arc_length <- function(euclidean_distance_between_ends, angle_between_tangents) {
   r = (euclidean_distance_between_ends / 2) / cos(angle_between_tangents / 2)
   (pi - abs(angle_between_tangents)) * r
+}
+
+
+interpolate_next_xy_velocity_angle <- function(x1, y1, v1, a1, x2, y2, v2, a2) {
+  angular_diff <- angular_difference(a1, a2)
+  straight_line_angle <- atan2(y2 - y1, x2 - x1)
+  straight_line_angular_diff <- angular_difference(a1, straight_line_angle)
+  if ((straight_line_angular_diff > min(0, angular_diff)) &
+        (straight_line_angular_diff < max(0, angular_diff))) {
+    arc_length <- circular_arc_length(((x2 - x1) ^ 2 + (y2 - y1) ^ 2) ^ 0.5, angular_diff)
+    mean_velocity <- (v1 + v2) / 2
+    estimated_num_seconds <- floor(arc_length / mean_velocity)
+    if (estimated_num_seconds > 0) {
+      velocity_change_per_second <- (v2 - v1) / estimated_num_seconds
+      angular_change_per_second <- angular_diff / estimated_num_seconds
+      velocity <- v1 + velocity_change_per_second
+      angle <- a1 + angular_change_per_second
+      x <- x1 + velocity * cos(angle)
+      y <- y1 + velocity * sin(angle)
+      list(x=x, y=y, velocity=velocity, angle=angle)
+    } else {
+      NULL
+    }
+  } else {
+    euclidean_distance <- ((x2 - x1) ^ 2 + (y2 - y1) ^ 2) ^ 0.5
+    mean_velocity <- (v1 + v2) / 2
+    estimated_num_seconds <- floor(euclidean_distance / mean_velocity)
+    if (estimated_num_seconds > 0) {
+      velocity_change_per_second <- (v2 - v1) / estimated_num_seconds
+      velocity <- v1 + velocity_change_per_second
+      angle <- straight_line_angle - angular_difference(straight_line_angle, a2) / 12
+      x <- x1 + velocity * cos(angle)
+      y <- y1 + velocity * sin(angle)
+      list(x=x, y=y, velocity=velocity, angle=angle)
+    } else {
+      NULL
+    }
+  }
 }
