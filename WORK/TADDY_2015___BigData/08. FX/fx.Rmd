@@ -1,0 +1,112 @@
+---
+title: 'FX Movements'
+output: pdf_document
+fontsize: 12
+geometry: margin=0.5in
+---
+(Student: Vinh Luong - 442069)
+
+
+``` {r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Set workding directory
+setwd('C:/Cloud/Dropbox/MBALearnsToCode_R/WORK/TADDY_2015___BigData/08. FX')
+data_folder_path <- 'C:/Cloud/Dropbox/MBALearnsToCode_Data/TADDY_2015___BigData/08. FX'
+# Load key packages
+library(data.table)
+library(plyr)
+library(reshape2)
+library(ggplot2)
+library(caret)
+library(gamlr)
+library(lubridate)
+# Start parallel computing cluster over multi cores
+library(doParallel)
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+getDoParWorkers()
+```
+
+
+```{r echo=FALSE}
+fx <- read.csv(file.path(data_folder_path, 'FXmonthly.csv'))
+fx <- (fx[2:120,]-fx[1:119,])/(fx[1:119,])
+sp500_returns <- read.csv(file.path(data_folder_path, 'sp500.csv'))
+currency_codes <- read.table(file.path(data_folder_path, 'currency_codes.txt'),
+                             stringsAsFactors=FALSE)
+names(currency_codes) <- c('code', 'country')
+for (i in 1 : ncol(fx)) {
+  names(fx)[i] <- currency_codes$country[
+    match(substr(names(fx)[i], 3, 4), currency_codes$code)]
+}
+```
+
+
+# 1. Correlations among FX Movements
+
+A brief look at the correlations among FX rates' movements reveals that there are many correlations that are significant - say, above 0.5.
+
+```{r echo=FALSE}
+hist(cor(fx))
+```
+
+This suggests that there can be underlying factors driving various subgroups of currencies, and that we can attempt to find such factors for dimensionality reduction purposes.
+
+
+# 2. Principal Components of FX Movements
+
+We now run PCA over the FX movements to discover major linear principal components:
+
+```{r echo=FALSE}
+fx_pca <- prcomp(fx)
+fx_pca_fit <- predict(fx_pca)
+plot(fx_pca, main='Principal Components of FX Movements')
+
+summary(fx_pca)
+```
+
+We can see from the above that the first two principal components dominate the total variance in the data, accounting for about 40% and 30% of the variance respectively. Let's now take a look at the loadings on the different currencies of these two principal components:
+
+```{r echo=FALSE}
+top_2_pc_loadings <- fx_pca$rotation[, 1:2]
+t(round(top_2_pc_loadings , 2))
+top_2_pc_fit <- fx_pca_fit[, 1:2]
+```
+
+The first PC's loadings are of the same sign, suggesting that it captures the overall movement of the US Dollar versus all other currencies, i.e. an overall appreciation or overall devaluation.
+
+The second PC interestingly has a huge loading on the currency of Venezuela, making it unmistakably oil-related! This PC is likely to capture the effects of the world price of oil.
+
+
+# 3. Regressions on Principal Components
+
+We now run a number of regressions of the S&P 500 returns, first using GLM on the first 10 principal components:
+
+```{r echo=FALSE}
+glm_fit <- glm(sp500_returns$sp500 ~ fx_pca_fit[, 1:10])
+summary(glm_fit)
+
+```
+
+We next consider running a LASSO regression of the S&P 500 returns on all principal components.
+```{r echo=FALSE}
+gamlr_fit <- gamlr(x=fx_pca_fit, y=sp500_returns$sp500)
+coef(gamlr_fit)
+```
+
+We see pretty similar results. Principal components 1 & 2 seem to be statistically significant. The US stock returns tend to increase when the dollar is weaker (presumably boosting exports), and to perform weaker when the world price of oil (which is denominated in USD) increases.
+
+
+# 4. Regression on Original FX Movements
+
+We now run a LASSO regression on the original covariates:
+
+```{r echo=FALSE}
+gamlr_fit_original <- gamlr(x=fx, y=sp500_returns$sp500)
+coef(gamlr_fit_original)
+```
+
+When we run the regression model this way, it is very difficult to interprete the results, as the covariates are correlated (unlike the PCs, which are uncorrelated). In this particular regression, the coefficient on the Chinese currency is large at 1.69, suggesting that US stock returns tend to perform stronger when the USD appreciates against the Yuan, which is counter-intuitive given that that would make US exports more expensive.
+
+```{r echo=FALSE}
+stopCluster(cl)
+```
