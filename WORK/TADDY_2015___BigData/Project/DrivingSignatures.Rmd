@@ -1,16 +1,21 @@
 ---
-title: 'Driving Signatures: Who''s Behind the Steering Wheel?'
+title: 'Driving Style Signatures: Who''s Behind the Steering Wheel?'
 output: pdf_document
 fontsize: 12
 geometry: margin=0.5in
 ---
-(Student: Vinh Luong - 442069)
+*(Student: Vinh Luong - 442069)*
 
+```{r echo=FALSE}
+library(knitr)
+opts_chunk$set(cache = TRUE, echo = FALSE)
+```
 
-``` {r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+``` {r message=FALSE, warning=FALSE, results='hide'}
 # Set workding directory
 setwd("C:/Cloud/Dropbox/MBALearnsToCode_R/WORK/TADDY_2015___BigData/Project")
-data_folder_path <- "C:/Cloud/Dropbox/MBALearnsToCode_Data/Kaggle/AXA Driver Telematics Analysis/drivers"
+superfolder_path <- "C:/Cloud/MBALearnsToCode_Data/Kaggle/AXA Driver Telematics Analysis"
+data_folder_path <- "C:/Cloud/MBALearnsToCode_Data/Kaggle/AXA Driver Telematics Analysis/drivers"
 source("Data_and_Features.R")
 source("Visualization.R")
 # Load key packages
@@ -26,26 +31,127 @@ library(doParallel)
 cl <- makeCluster(detectCores()-1)
 registerDoParallel(cl)
 getDoParWorkers()
+
+options(expressions = 5e5)
 ```
 
-```{r}
-drivers <- list_drivers(data_folder_path)
-d <- read_driver_trip(data_folder_path, 1, 136)
-d <- read_driver_trip(data_folder_path, 3000, 21)
-d <- read_driver_trip(data_folder_path, 1, 136)
-d <- read_driver_trip(data_folder_path, 1, 136)
-d <- read_driver_trip(data_folder_path, 1, 136)
-d <- read_driver_trip(data_folder_path, 1, 136)
+```{r echo=FALSE, warning=FALSE}
+# count_driver_trip_data_sets_with_unclean_velocities(data_folder_path)
+u <- clean_velocity_data_for_all_driver_trips(superfolder_path)
+UNIT_TEST___intersection_xy_and_side_lengths(10000)
+UNIT_TEST___intersection_xy(10000)
 
+d <- read_driver_trip(data_folder_path, 1, 136)
 d <- calc_trip_data(d)
+plot_trip(d[250:300], 2, color="blue")
 bad_trip_data_indices(d)
-plot_trip(d, 2, color="blue")
+d_clean <- clean_velocity_data(d)
+plot_trip(d_clean[270:320], 2, color="blue")
+
+
+d <- read_driver_trip(data_folder_path, 1, 83)
+d <- calc_trip_data(d)
+plot_trip(d[271:300], 2, color="blue")
+bad_trip_data_indices(d)
+d_clean <- clean_velocity_data(d)
+plot_trip(d_clean[271:320], 2, color="blue")
+
+d <- read_driver_trip(data_folder_path, 3000, 21)
+d <- calc_trip_data(d)
+plot_trip(d[300:350], 2, color="blue")
+bad_trip_data_indices(d)
 d_clean <- clean_velocity_data(d)
 plot_trip(d_clean, 2, color="blue")
-bad_trip_data_indices(d_clean)
+
+#bad_trip_data_indices(d_clean)
 ```
 
 
+# Executive Summary
+
+This project attempts to develop a method to detect different people's own driving style "signatures" from a series of second-by-second GPS coordinate readings from their car's telematics devices.
+
+
+# 1. Data and Data-Preprocessing
+
+## 1.1. Data and Basic Higher-Order Features
+
+We obtained second-by-second GPS ($x_t$, $y_t$) coordinate data from over half a million anonymized driving trips (200 trips by each of over 2,700 individual drivers) from [French insurer AXA's Kaggle competition data set](http://www.kaggle.com/c/axa-driver-telematics-analysis). A typical trip looks like the following:
+
+```{r}
+plot_trip(calc_trip_data(read_driver_trip(data_folder_path, 1, 3)), 0.001,
+          title = "Driver #1 Trip #3", color = "blue")
+```
+
+For anonymization purposes, each trip's starting point was centered at (0, 0) and the subsequent coordinates were rotated by a random angle. 
+
+From the raw ($x_t$, $y_t$) data, we derived a number of basic higher-order features as follows:
+
+$$
+\begin{aligned}
+  & \textbf{\textit{x}-velocity: } \Delta x_t = x_t - x_{t - 1} \\
+  & \textbf{\textit{y}-velocity: } \Delta y_t = y_t - y_{t - 1} \\
+  \\
+  & \textbf{\textit{x}-acceleration: } \Delta \Delta x_t = \Delta x_t - \Delta x_{t - 1} \\
+  & \textbf{\textit{y}-acceleration: } \Delta \Delta y_t = \Delta y_t - \Delta y_{t - 1} \\
+  \\
+  & \textbf{velocity magnitude: } v_t = \bigg\Vert \begin{array}{c}
+                                                \Delta x_t \\
+                                                \Delta y_t \end{array} \bigg\Vert \\
+  \\
+  & \textbf{acceleration magnitude: } a_t = \frac{1}{v_t} \bigg\langle \bigg[ \begin{array}{c}
+                                                \Delta \Delta x_t \\
+                                                \Delta \Delta y_t \end{array} \bigg],
+                                          \bigg[ \begin{array}{c}
+                                                \Delta x_t \\
+                                                \Delta y_t \end{array} \bigg] \bigg\rangle \\
+  & \text{(i.e. acceleration in the direction of the velocity vector }
+    \left[ \begin{array}{c}
+          \Delta x_t \\
+          \Delta y_t \end{array} \right]) \\
+  \\
+  & \textbf{angle: } \theta = \text{arctan}(\Delta y_t, \Delta x_t) \\
+  & \textbf{angular velocity: } \Delta \theta = \theta_t - \theta_{t - 1} \\
+  & \textbf{angular acceleration: } \Delta \Delta \theta = \Delta \theta_t - \Delta \theta_{t - 1}
+\end{aligned}
+$$
+
+
+# 1.2. Data Cleaning
+
+Before we could proceed with analyzing this large data set, we had to attend to some data integrity issues. It turned out that due to lost communication signals and/or some extreme anonymization measures, many of the driving trip data sets were plagued with coordinate "jumps", i.e. i.e. missing chunks of GPS readings. One example is portrayed below:
+
+```{r warning=FALSE}
+d_1_136 <- calc_trip_data(read_driver_trip(data_folder_path, 1, 136))
+plot_trip(d_1_136[241:320], 3, title = "Driver #1 Trip #136 - portion with missing data",
+          color = "blue")
+```
+
+This problem was found present in over 25,000 driving trip data sets. Also, nearly 100% of the over 2,700 drivers have trips with missing data.
+
+In the above depicted case, as well as in other missing data cases, the corrupt data portions (highlighted by red dots in the plots) manifest themselves quite apparently by an unreasonably large distance from ($x_{t - 1}, y_{t - 1}$) to ($x_t, y_t$), or equivalently an unreasonably high velocity $v_t$ estimated from such consecutive pairs of coordinates. We hence devised a method to detect and interpolate the missing data, briefly as follows:
+
+* detect data rows with derived velocity $v_t$ over 50 meters per second;
+
+* look at time windows of 3 seconds before and 3 seconds after each of such instance, and estimate the average velocities $v_\text{before}$ and $v_\text{after}$ and angular directions $\theta_\text{before}$ and $\theta_\text{after}$;
+
+* estimate the length of a smooth circular arc spanning the locations ($x_\text{before}$, $y_\text{before}$) and ($x_\text{after}$, $y_\text{after}$) and with tangents at angles $\theta_\text{before}$ and $\theta_\text{after}$ at those points;
+
+* estimate the number of seconds the vehicle needs to take to traverse such an arc at velocity $v_\text{mean} = \frac{1}{2}(v_\text{before} + v_\text{after})$;
+
+* interpolate missing intermediate locations along the arc, with some minor technical adjustments to make the vehicle accelerate or decelerate evenly from $v_\text{before}$ to $v_\text{after}$.
+
+and interpolate cleaned the data by imposing a speed limit of 50 meters per second (over 100 miles per hour) and detect rows of data with estimated velocities over this limit.
+
+With such a data interpolation method, the above case of Driver #1's Trip #136 was corrected to the following:
+
+```{r warning=FALSE}
+d_1_136_corrected <- clean_velocity_data(d_1_136)
+plot_trip(d_1_136_corrected[261:350], 3, title = "Driver #1 Trip #136 - missing data interpolated",
+          color = "blue")
+```
+
+Overall, various data verification and cleaning steps took about 100 hours on a single computer running on seven cores.
 
 ```{r echo=FALSE}
 stopCluster(cl)

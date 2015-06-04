@@ -1,4 +1,4 @@
-plot_trip <- function(trip_data_table, arrow_size_mm = 1, ...)
+plot_trip <- function(trip_data_table, arrow_size_mm = 1, title="", ...)
 {
   library(ggplot2)
   library(grid)
@@ -8,7 +8,8 @@ plot_trip <- function(trip_data_table, arrow_size_mm = 1, ...)
   {
     ggp <- ggplot(trip_data_table, aes(x, y)) +
       geom_segment(aes(xend = x + dx, yend = y + dy),
-                   arrow = arrow(length = unit(arrow_size_mm, "mm")), ...)
+                   arrow = arrow(length = unit(arrow_size_mm, "mm")), ...) +
+      ggtitle(title)
   }
   else {
     d <- trip_data_table
@@ -19,7 +20,8 @@ plot_trip <- function(trip_data_table, arrow_size_mm = 1, ...)
     ggp <- ggplot(trip_data_table, aes(x, y)) +
       geom_segment(aes(xend = x + dx, yend = y + dy),
                    arrow = arrow(length = unit(arrow_size_mm, "mm")), ...) +
-      geom_point(aes(bad_x, bad_y), color='red', size=3)
+      geom_point(aes(bad_x, bad_y), color='red', size=3) +
+      ggtitle(title)
   }
   ggp
 }
