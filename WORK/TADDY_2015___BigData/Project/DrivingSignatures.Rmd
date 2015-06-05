@@ -8,7 +8,7 @@ geometry: margin=0.5in
 
 ```{r echo=FALSE}
 library(knitr)
-opts_chunk$set(cache = TRUE, echo = FALSE)
+opts_chunk$set(echo = FALSE, warning=FALSE)  #cache = TRUE, 
 ```
 
 ``` {r message=FALSE, warning=FALSE, results='hide'}
@@ -23,6 +23,7 @@ library(data.table)
 library(plyr)
 library(reshape2)
 library(ggplot2)
+library(GGally)
 library(caret)
 library(gamlr)
 library(lubridate)
@@ -31,61 +32,38 @@ library(doParallel)
 cl <- makeCluster(detectCores()-1)
 registerDoParallel(cl)
 getDoParWorkers()
-
-options(expressions = 5e5)
-```
-
-```{r echo=FALSE, warning=FALSE}
-# count_driver_trip_data_sets_with_unclean_velocities(data_folder_path)
-u <- clean_velocity_data_for_all_driver_trips(superfolder_path)
-UNIT_TEST___intersection_xy_and_side_lengths(10000)
-UNIT_TEST___intersection_xy(10000)
-
-d <- read_driver_trip(data_folder_path, 1, 136)
-d <- calc_trip_data(d)
-plot_trip(d[250:300], 2, color="blue")
-bad_trip_data_indices(d)
-d_clean <- clean_velocity_data(d)
-plot_trip(d_clean[270:320], 2, color="blue")
-
-
-d <- read_driver_trip(data_folder_path, 1, 83)
-d <- calc_trip_data(d)
-plot_trip(d[271:300], 2, color="blue")
-bad_trip_data_indices(d)
-d_clean <- clean_velocity_data(d)
-plot_trip(d_clean[271:320], 2, color="blue")
-
-d <- read_driver_trip(data_folder_path, 3000, 21)
-d <- calc_trip_data(d)
-plot_trip(d[300:350], 2, color="blue")
-bad_trip_data_indices(d)
-d_clean <- clean_velocity_data(d)
-plot_trip(d_clean, 2, color="blue")
-
-#bad_trip_data_indices(d_clean)
+#clean_velocity_data_for_all_driver_trips(superfolder_path)
+unclean <- readRDS(file.path(superfolder_path, "unclean_velocity_data_cases.RDS"))
 ```
 
 
-# Executive Summary
+# Introduction
 
-This project attempts to develop a method to detect different people's own driving style "signatures" from a series of second-by-second GPS coordinate readings from their car's telematics devices.
+The field of automotive insurance has a number of important questions regarding individuals' driving behaviors:
+
+i. What data features are needed to characterize a person's driving habits? - such features can be used to appropriately price accident risk as well as cross-sell related insurance products;
+
+ii. In the case of an accident claim, given such data features, how well can we tell if the insured person - and not another person - is really behind the steering wheel when the incident occurs?
+
+The advent of vehicle-mounted telematics devices has provided rich new data sources to address these issues. In this project, we attempt to develop a method to detect different people's own driving style "signatures" from a series of second-by-second GPS coordinate readings from their cars' telematics. We will show that by using just simple features such as velocity, acceleration, angular velocity and angular acceleration, we could correctly identify with [90%] accuracy whether the insured driver is driving his/her car.
 
 
 # 1. Data and Data-Preprocessing
 
-## 1.1. Data and Basic Higher-Order Features
+## 1.1. Raw Data and Processed Higher-Order Features
 
-We obtained second-by-second GPS ($x_t$, $y_t$) coordinate data from over half a million anonymized driving trips (200 trips by each of over 2,700 individual drivers) from [French insurer AXA's Kaggle competition data set](http://www.kaggle.com/c/axa-driver-telematics-analysis). A typical trip looks like the following:
+We obtained second-by-second GPS ($x_t$, $y_t$) coordinate data from over half a million anonymized driving trips (200 trips by each of over 2,700 individual drivers) from [French insurer AXA's Kaggle competition data set](http://www.kaggle.com/c/axa-driver-telematics-analysis). This large dataset occupies nearly 6 GB of storage space when unpacked.
+
+One trip is depicted below:
 
 ```{r}
-plot_trip(calc_trip_data(read_driver_trip(data_folder_path, 1, 3)), 0.001,
-          title = "Driver #1 Trip #3", color = "blue")
+d_1_3 <- calc_trip_data(read_driver_trip(data_folder_path, 1, 3))
+plot_trip(d_1_3, 0.001, title = "Driver #1 Trip #3", color = "blue")
 ```
 
-For anonymization purposes, each trip's starting point was centered at (0, 0) and the subsequent coordinates were rotated by a random angle. 
+For anonymization purposes, each trip's starting point is centered at (0, 0) and the subsequent coordinates are rotated by a random angle. 
 
-From the raw ($x_t$, $y_t$) data, we derived a number of basic higher-order features as follows:
+From the raw ($x_t$, $y_t$) data, we derived a number of higher-order features as follows:
 
 $$
 \begin{aligned}
@@ -95,11 +73,11 @@ $$
   & \textbf{\textit{x}-acceleration: } \Delta \Delta x_t = \Delta x_t - \Delta x_{t - 1} \\
   & \textbf{\textit{y}-acceleration: } \Delta \Delta y_t = \Delta y_t - \Delta y_{t - 1} \\
   \\
-  & \textbf{velocity magnitude: } v_t = \bigg\Vert \begin{array}{c}
+  & \textbf{absolute velocity magnitude: } v_t = \bigg\Vert \begin{array}{c}
                                                 \Delta x_t \\
                                                 \Delta y_t \end{array} \bigg\Vert \\
   \\
-  & \textbf{acceleration magnitude: } a_t = \frac{1}{v_t} \bigg\langle \bigg[ \begin{array}{c}
+  & \textbf{signed acceleration magnitude: } a_t = \frac{1}{v_t} \bigg\langle \bigg[ \begin{array}{c}
                                                 \Delta \Delta x_t \\
                                                 \Delta \Delta y_t \end{array} \bigg],
                                           \bigg[ \begin{array}{c}
@@ -111,15 +89,22 @@ $$
           \Delta y_t \end{array} \right]) \\
   \\
   & \textbf{angle: } \theta = \text{arctan}(\Delta y_t, \Delta x_t) \\
-  & \textbf{angular velocity: } \Delta \theta = \theta_t - \theta_{t - 1} \\
-  & \textbf{angular acceleration: } \Delta \Delta \theta = \Delta \theta_t - \Delta \theta_{t - 1}
-\end{aligned}
+  & \textbf{signed angular velocity: } \Delta \theta_t = \theta_t - \theta_{t - 1} \\
+  & \textbf{absolute angular velocity: } |\Delta \theta_t| \\
+  & \textbf{signed angular acceleration: } \Delta \Delta \theta_t = \Delta \theta_t - \Delta \theta_{t - 1} \\
+  & \textbf{absolute angular acceleration: } |\Delta \Delta \theta_t| \end{aligned}
 $$
 
+These features are measured for every second of each driving trip. Among them, we will focus on several features measuring **rates of change**, namely **velocity**, **acceleration**, **(signed and absolute) angular velocity** and **(signed and absolute) angular acceleration**. For the above depicted trip, the distributions and correlations among these variables are as follows:
 
-# 1.2. Data Cleaning
+```{r}
+plot_trip_data_matrix(d_1_3)
+```
 
-Before we could proceed with analyzing this large data set, we had to attend to some data integrity issues. It turned out that due to lost communication signals and/or some extreme anonymization measures, many of the driving trip data sets were plagued with coordinate "jumps", i.e. i.e. missing chunks of GPS readings. One example is portrayed below:
+
+## 1.2. Data Cleaning
+
+Before we could proceed with analyzing this large data set, we had to attend to some data integrity issues. It turns out that due to lost communication signals and/or some extreme anonymization measures, numerous raw driving trip data sets are plagued with coordinate "jumps", i.e. missing chunks of GPS readings. One example is portrayed below:
 
 ```{r warning=FALSE}
 d_1_136 <- calc_trip_data(read_driver_trip(data_folder_path, 1, 136))
@@ -127,31 +112,94 @@ plot_trip(d_1_136[241:320], 3, title = "Driver #1 Trip #136 - portion with missi
           color = "blue")
 ```
 
-This problem was found present in over 25,000 driving trip data sets. Also, nearly 100% of the over 2,700 drivers have trips with missing data.
+This problem is very pervasive, present in over 25,000 driving trip data sets. Also, nearly 100% of the over 2,700 drivers have trips with missing data.
 
-In the above depicted case, as well as in other missing data cases, the corrupt data portions (highlighted by red dots in the plots) manifest themselves quite apparently by an unreasonably large distance from ($x_{t - 1}, y_{t - 1}$) to ($x_t, y_t$), or equivalently an unreasonably high velocity $v_t$ estimated from such consecutive pairs of coordinates. We hence devised a method to detect and interpolate the missing data, briefly as follows:
+In the above depicted case, as well as in other missing data cases, the corrupt data portions (highlighted by red dots in the plots) manifest themselves quite apparently by an unreasonably large distance from ($x_{t - 1}, y_{t - 1}$) to ($x_t, y_t$), or equivalently an unreasonably high velocity $v_t$ estimated from such consecutive pairs of coordinates. We hence devised a method to detect and interpolate the missing data, described at a high level as follows:
 
 * detect data rows with derived velocity $v_t$ over 50 meters per second;
 
 * look at time windows of 3 seconds before and 3 seconds after each of such instance, and estimate the average velocities $v_\text{before}$ and $v_\text{after}$ and angular directions $\theta_\text{before}$ and $\theta_\text{after}$;
 
-* estimate the length of a smooth circular arc spanning the locations ($x_\text{before}$, $y_\text{before}$) and ($x_\text{after}$, $y_\text{after}$) and with tangents at angles $\theta_\text{before}$ and $\theta_\text{after}$ at those points;
+* by certain polygonal approximations, estimate the length of one or several smooth parabolic arcs spanning the locations ($x_\text{before}$, $y_\text{before}$) and ($x_\text{after}$, $y_\text{after}$) and with tangents at angles $\theta_\text{before}$ and $\theta_\text{after}$ at those points; (*it will become apparent in certain visualizations below why parabolic curves are more natural than straight lines or circular curves*)
 
-* estimate the number of seconds the vehicle needs to take to traverse such an arc at velocity $v_\text{mean} = \frac{1}{2}(v_\text{before} + v_\text{after})$;
+* estimate the number of seconds the vehicle needs to take to traverse such parabolic arc(s) at velocity $v_\text{mean} = \frac{1}{2}(v_\text{before} + v_\text{after})$;
 
-* interpolate missing intermediate locations along the arc, with some minor technical adjustments to make the vehicle accelerate or decelerate evenly from $v_\text{before}$ to $v_\text{after}$.
+* interpolate missing intermediate locations along the parabolic arc(s), with certain technical adjustments to make the vehicle accelerate or decelerate evenly from $v_\text{before}$ to $v_\text{after}$.
 
-and interpolate cleaned the data by imposing a speed limit of 50 meters per second (over 100 miles per hour) and detect rows of data with estimated velocities over this limit.
+With such a data interpolation method, the above case of Driver #1's Trip #136 could be corrected to the following:
 
-With such a data interpolation method, the above case of Driver #1's Trip #136 was corrected to the following:
-
-```{r warning=FALSE}
+```{r}
 d_1_136_corrected <- clean_velocity_data(d_1_136)
-plot_trip(d_1_136_corrected[261:350], 3, title = "Driver #1 Trip #136 - missing data interpolated",
+p1 <- plot_trip(d_1_136[241:320], 3, title = "Dr#1 Tr#136 - missing data",
           color = "blue")
+p2 <- plot_trip(d_1_136_corrected[241:350], 3, title = "Dr#1 Tr#136 - interpolated",
+          color = "blue")
+multiplot(p1, p2, cols = 2)
 ```
 
-Overall, various data verification and cleaning steps took about 100 hours on a single computer running on seven cores.
+Below are several other examples demonstrating the efficacy of this method in recovering smooth, realistic-looking paths to replace missing data (notice how parabolic-curve approximation works really well, while using straight lines or circular arcs would have created much less believable trajectories):  
+
+```{r}
+d_1_83 <- calc_trip_data(read_driver_trip(data_folder_path, 1, 83))
+d_1_83_corrected <- clean_velocity_data(d_1_83)
+p1 <- plot_trip(d_1_83[261:300], 1.3, title = "Dr#1 Tr#83 - missing data",
+          color = "blue")
+p2 <- plot_trip(d_1_83_corrected[261 : 330], 1.3, title = "Dr#1 Tr#83 - interpolated",
+          color = "blue")
+multiplot(p1, p2, cols = 2)
+```
+
+```{r}
+d_3000_21 <- calc_trip_data(read_driver_trip(data_folder_path, 3000, 21))
+d_3000_21_corrected <- clean_velocity_data(d_3000_21)
+p1 <- plot_trip(d_3000_21[261 : 500], 1, title = "Dr#3000 T#21 - missing data",
+          color = "blue")
+p2 <- plot_trip(d_3000_21_corrected[261 : 1150], 1, title = "Dr#3000 Tr#21 - interpolated",
+          color = "blue")
+multiplot(p1, p2, cols = 2)
+```
+
+```{r}
+d_20_170 <- calc_trip_data(read_driver_trip(data_folder_path, 20, 170))
+d_20_170_corrected <- clean_velocity_data(d_20_170)
+p1 <- plot_trip(d_20_170[701 : 890], 1, title = "Dr#20 Tr#170 - missing data",
+          color = "blue")
+p2 <- plot_trip(d_20_170_corrected[701 : 1500], 1, title = "Dr#20 Tr#170 - interpolated",
+          color = "blue")
+multiplot(p1, p2, cols = 2)
+```
+
+However, there are also many cases with data so corrupt that they cannot be reliably recovered:
+
+```{r}
+d_20_13 <- calc_trip_data(read_driver_trip(data_folder_path, 20, 13))
+d_20_13_corrected <- clean_velocity_data(d_20_13)
+p1 <- plot_trip(d_20_13, 1.3, title = "Dr#20 Tr#13 - very corrupt data",
+          color = "blue")
+p2 <- plot_trip(d_20_13_corrected, 1.3, title = "Dr#20 Tr#13 - intepolated",
+          color = "blue")
+multiplot(p1, p2, cols = 2)
+```
+
+We hence decided to limit recovery of missing data to cases with three or fewer missing sections, and discard the more seriously impaired cases. Overall, we recovered missing data for about 18,000 out of the 25,000 affected driving trip data sets.
+
+In terms of time cost, our various data verification and cleaning steps took us about 100 hours on a single computer running on seven cores.
+
+
+# 2. Driver Identification as Classification Problem
+
+Following the above data verification and cleaning procedures, the question for us to address now is that, with such a database of labeled personal driving trip data (raw GPS plus derived features), whether we can effectively distinguish among different drivers' different driving styles.
+
+
+## 2.1. Problem Framing
+
+For each individual Driver *D*, we have got a collection of labeled driving trips representing his/her typical driving habits. Because we have over 2,700 such drivers in the database, for each Driver *D* we have also got an abundance of labeled driving trips that are ***not*** by Driver *D*.
+
+With such labeled data and a "one-vs.-all" approach, we can train a discriminative classification model to distinguish the driving style of Driver *D* versus those of other drivers. At test time, the trained discriminative model will be given an unlabeled driving trip data set comprising GPS coordinate readings and the related derived higher-order features, and the model will be evaluated according to how well it classifies whether or not the trip is by Driver *D*.
+
+
+## 2.2. 
+
 
 ```{r echo=FALSE}
 stopCluster(cl)

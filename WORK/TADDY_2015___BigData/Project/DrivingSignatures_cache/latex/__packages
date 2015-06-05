@@ -12,3 +12,4 @@ lubridate
 foreach
 iterators
 doParallel
+GGally

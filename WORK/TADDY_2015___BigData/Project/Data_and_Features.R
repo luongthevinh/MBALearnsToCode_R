@@ -1,6 +1,5 @@
 library(data.table)
 library(plyr)
-source('Visualization.R')
 
 
 list_drivers <- function(data_folder_path) {
@@ -32,6 +31,107 @@ angular_difference <- function(from_angle, to_angle) {
   angular_diff <- to_angle - from_angle
   atan2(sin(angular_diff), cos(angular_diff))
 }
+
+
+calc_velocity_vector <- function(trip_data_table) {
+  trip_data_table[, `:=`(dx = c(NA, diff(x)),
+                         dy = c(NA, diff(y)))]
+  trip_data_table$dx[1] = trip_data_table$dx[2]
+  trip_data_table$dy[1] = trip_data_table$dy[2]
+  trip_data_table
+}
+
+
+calc_acceleration_vector <- function(trip_data_table) {
+  trip_data_table[, `:=`(ddx = c(NA, diff(dx)),
+                         ddy = c(NA, diff(dy)))]
+  trip_data_table$ddx[1] = trip_data_table$ddx[2]
+  trip_data_table$ddy[1] = trip_data_table$ddy[2]
+  trip_data_table
+}
+
+
+calc_velocity <- function(trip_data_table) {
+  trip_data_table[, velocity := euclidean_norm(dx, dy)]
+  trip_data_table
+}
+
+
+calc_acceleration <- function(trip_data_table) {
+  trip_data_table[, acceleration := scalar_product(ddx, ddy, dx, dy) / velocity]
+  trip_data_table
+}
+
+
+calc_angle <- function(trip_data_table) {
+  trip_data_table[, angle := atan2(dy, dx)]
+  trip_data_table
+}
+
+
+calc_angular_velocity <- function(trip_data_table) {
+  angular_differences = c(NA, diff(trip_data_table$angle))
+  angular_differences[1] = angular_differences[2]
+  trip_data_table[, angular_velocity := atan2(sin(angular_differences), cos(angular_differences))]
+  trip_data_table[, abs_angular_velocity := abs(angular_velocity)]
+  trip_data_table
+}
+
+
+calc_angular_acceleration <- function(trip_data_table) {
+  trip_data_table[, angular_acceleration := c(NA, diff(angular_velocity))]
+  trip_data_table$angular_acceleration[1] = trip_data_table$angular_acceleration[2]
+  trip_data_table[, abs_angular_acceleration := abs(angular_acceleration)]
+  trip_data_table  
+}
+
+
+calc_velocity_validity <- function(trip_data_table, max_velocity_m_per_s=50) {
+  trip_data_table[, velocity_check := velocity < max_velocity_m_per_s]
+  trip_data_table
+}
+
+
+calc_angular_velocity_validity <- function(trip_data_table,
+                                           max_absolute_angular_velocity = 5 / 6 * pi) {
+  trip_data_table[, angular_velocity_check := 
+                    abs_angular_velocity < max_absolute_angular_velocity]
+  trip_data_table
+}
+
+
+calc_overall_data_validity <- function(trip_data_table) {
+  trip_data_table[, overall_check := velocity_check & angular_velocity_check]
+  trip_data_table
+}
+
+
+calc_trip_data <- function(trip_data_table, max_velocity_m_per_s = 50,
+                           max_absolute_angular_velocity = 5 / 6 * pi) {
+  calc_overall_data_validity(
+    calc_angular_velocity_validity(
+      calc_velocity_validity(
+        calc_angular_acceleration(
+          calc_angular_velocity(
+            calc_angle(
+              calc_acceleration(
+                calc_velocity(
+                  calc_acceleration_vector(
+                    calc_velocity_vector(trip_data_table))))))),
+        max_velocity_m_per_s = max_velocity_m_per_s),
+      max_absolute_angular_velocity = max_absolute_angular_velocity))
+}
+
+
+check_trip_data_quality <- function(trip_data_table) {
+  all(trip_data_table$overall_check)
+}
+
+
+bad_velocity_data_indices <- function(trip_data_table) {
+  which(!trip_data_table$velocity_check)
+}
+
 
 
 intersection_xy_and_signed_side_lengths <- function(x1, y1, a1, x2, y2, a2) {
@@ -112,113 +212,26 @@ UNIT_TEST___intersection_xy <- function(num_times = 1000) {
 }
 
 
-calc_velocity_vector <- function(trip_data_table) {
-  trip_data_table[, `:=`(dx = c(NA, diff(x)),
-                         dy = c(NA, diff(y)))]
-  trip_data_table$dx[1] = trip_data_table$dx[2]
-  trip_data_table$dy[1] = trip_data_table$dy[2]
-  trip_data_table
-}
 
 
-calc_acceleration_vector <- function(trip_data_table) {
-  trip_data_table[, `:=`(ddx = c(NA, diff(dx)),
-                         ddy = c(NA, diff(dy)))]
-  trip_data_table$ddx[1] = trip_data_table$ddx[2]
-  trip_data_table$ddy[1] = trip_data_table$ddy[2]
-  trip_data_table
-}
 
 
-calc_velocity <- function(trip_data_table) {
-  trip_data_table[, velocity := euclidean_norm(dx, dy)]
-  trip_data_table
-}
- 
 
-calc_acceleration <- function(trip_data_table) {
-  trip_data_table[, acceleration := scalar_product(ddx, ddy, dx, dy) / velocity]
-  trip_data_table
-}
-
-
-calc_angle <- function(trip_data_table) {
-  trip_data_table[, angle := atan2(dy, dx)]
-  trip_data_table
-}
-
-
-calc_angular_velocity <- function(trip_data_table) {
-  angular_differences = c(NA, diff(trip_data_table$angle))
-  angular_differences[1] = angular_differences[2]
-  trip_data_table[, angular_velocity := atan2(sin(angular_differences), cos(angular_differences))]
-  trip_data_table
-}
-
-
-calc_angular_acceleration <- function(trip_data_table) {
-  trip_data_table[, angular_acceleration := c(NA, diff(angular_velocity))]
-  trip_data_table$angular_acceleration[1] = trip_data_table$angular_acceleration[2]
-  trip_data_table  
-}
-
-
-calc_velocity_validity <- function(trip_data_table, max_velocity_m_per_s=50) {
-  trip_data_table[, velocity_check := velocity < max_velocity_m_per_s]
-  trip_data_table
-}
-
-
-calc_angular_velocity_validity <- function(trip_data_table,
-                                           max_absolute_angular_velocity = 5 / 6 * pi) {
-  trip_data_table[, angular_velocity_check := 
-                    abs(angular_velocity) < max_absolute_angular_velocity]
-  trip_data_table
-}
-
-
-calc_overall_data_validity <- function(trip_data_table) {
-  trip_data_table[, overall_check := velocity_check]   #  & angular_velocity_check
-  trip_data_table
-}
-
-
-calc_trip_data <- function(trip_data_table, max_velocity_m_per_s = 50,
-                           max_absolute_angular_velocity = 5 / 6 * pi) {
-  calc_overall_data_validity(
-    calc_angular_velocity_validity(
-    calc_velocity_validity(
-    calc_angular_acceleration(
-    calc_angular_velocity(
-    calc_angle(
-    calc_acceleration(
-    calc_velocity(
-    calc_acceleration_vector(
-    calc_velocity_vector(trip_data_table))))))),
-    max_velocity_m_per_s = max_velocity_m_per_s),
-    max_absolute_angular_velocity = max_absolute_angular_velocity))
-}
-  
-
-check_trip_data_quality <- function(trip_data_table) {
-  all(trip_data_table$overall_check)
-}
-
-
-bad_trip_data_indices <- function(trip_data_table) {
-  which(!trip_data_table$overall_check)
-}
 
 
 interpolate_xy <- function(x1, y1, v1, a1, x2, y2, v2, a2, max_acute_angle = 5 * pi / 6,
-                           start_time = NULL, max_time = 9) {
-  
+                           start_time = NULL, max_time = 6) {
+  #print(start_time)
   if (is.null(start_time)) {
-    start_time = Sys.time()
-  } else if (Sys.time() > start_time + max_time) {
-    cat('INTERPOLATION TAKING TOO LONG --> forcibly terminated!\n')
-    return(NULL)
+    recursion_start_time = Sys.time()
+  } else {
+    recursion_start_time = start_time
+    if (Sys.time() > start_time + max_time) {
+      cat('INTERPOLATION TAKING TOO LONG --> forcibly skipped!\n')
+      return('skipped')
+    }
   }
+  
   
   d <- euclidean_norm(x1, y1, x2, y2)
   
@@ -312,11 +325,17 @@ interpolate_xy <- function(x1, y1, v1, a1, x2, y2, v2, a2, max_acute_angle = 5 *
         a <- angle_between_2_points(x, y, intersection_x, intersection_y)
         
         interpolated_xy_1 <- interpolate_xy(x1, y1, v1, a1, x, y, mean_velocity, a,
-                                            max_acute_angle = max_acute_angle,
-                                            start_time = start_time)
+                                            5 * pi / 6,
+                                            recursion_start_time)
+        if ((!is.null(interpolated_xy_1)) & is.atomic(interpolated_xy_1)) {
+          return('skipped')
+        }
         interpolated_xy_2 <- interpolate_xy(x, y, mean_velocity, a, x2, y2, v2, a2,
-                                            max_acute_angle = max_acute_angle,
-                                            start_time = start_time)
+                                            5 * pi / 6,
+                                            recursion_start_time)
+        if ((!is.null(interpolated_xy_2)) & is.atomic(interpolated_xy_2)) {
+          return('skipped')
+        }
         return(list(x = c(interpolated_xy_1$x, x, interpolated_xy_2$x),
                     y = c(interpolated_xy_1$y, y, interpolated_xy_2$y)))
         
@@ -338,11 +357,17 @@ interpolate_xy <- function(x1, y1, v1, a1, x2, y2, v2, a2, max_acute_angle = 5 *
       a <- angle_between_2_points(x, y, intersection_x, intersection_y)
       
       interpolated_xy_1 <- interpolate_xy(x1, y1, v1, a1, x, y, mean_velocity, a,
-                                          max_acute_angle = max_acute_angle,
-                                          start_time = start_time)
+                                          5 * pi / 6,
+                                          recursion_start_time)
+      if ((!is.null(interpolated_xy_1)) & is.atomic(interpolated_xy_1)) {
+        return('skipped')
+      }
       interpolated_xy_2 <- interpolate_xy(x, y, mean_velocity, a, x2, y2, v2, a2,
                                           max_acute_angle = max_acute_angle,
-                                          start_time = start_time)
+                                          start_time = recursion_start_time)
+      if ((!is.null(interpolated_xy_2)) & is.atomic(interpolated_xy_2)) {
+        return('skipped')
+      }
       return(list(x = c(interpolated_xy_1$x, x, interpolated_xy_2$x),
                   y = c(interpolated_xy_1$y, y, interpolated_xy_2$y)))
       
@@ -355,10 +380,16 @@ interpolate_xy <- function(x1, y1, v1, a1, x2, y2, v2, a2, max_acute_angle = 5 *
       a <- angle_between_2_points(from_x, from_y, m_x, m_y)
       interpolated_xy_1 <- interpolate_xy(x1, y1, v1, a1, m_x, m_y, mean_velocity, a,
                                           max_acute_angle = max_acute_angle,
-                                          start_time = start_time)
+                                          start_time = recursion_start_time)
+      if ((!is.null(interpolated_xy_1)) & is.atomic(interpolated_xy_1)) {
+        return('skipped')
+      }
       interpolated_xy_2 <- interpolate_xy(m_x, m_y, mean_velocity, a, x2, y2, v2, a2,
                                           max_acute_angle = max_acute_angle,
-                                          start_time = start_time)
+                                          start_time = recursion_start_time)
+      if ((!is.null(interpolated_xy_2)) & is.atomic(interpolated_xy_2)) {
+        return('skipped')
+      }
       return(list(x = c(interpolated_xy_1$x, m_x, interpolated_xy_2$x),
                   y = c(interpolated_xy_1$y, m_y, interpolated_xy_2$y)))
       
@@ -371,10 +402,16 @@ interpolate_xy <- function(x1, y1, v1, a1, x2, y2, v2, a2, max_acute_angle = 5 *
       a <- angle_between_2_points(m_x, m_y, to_x, to_y)
       interpolated_xy_1 <- interpolate_xy(x1, y1, v1, a1, m_x, m_y, mean_velocity, a,
                                           max_acute_angle = max_acute_angle,
-                                          start_time = start_time)
+                                          start_time = recursion_start_time)
+      if ((!is.null(interpolated_xy_1)) & is.atomic(interpolated_xy_1)) {
+        return('skipped')
+      }
       interpolated_xy_2 <- interpolate_xy(m_x, m_y, mean_velocity, a, x2, y2, v2, a2,
                                           max_acute_angle = max_acute_angle,
-                                          start_time = start_time)
+                                          start_time = recursion_start_time)
+      if ((!is.null(interpolated_xy_2)) & is.atomic(interpolated_xy_2)) {
+        return('skipped')
+      }
       return(list(x = c(interpolated_xy_1$x, m_x, interpolated_xy_2$x),
                   y = c(interpolated_xy_1$y, m_y, interpolated_xy_2$y)))
     }
@@ -386,51 +423,65 @@ clean_velocity_data <- function(trip_data_table, num_rows_before_after = 3) {
   while (!all(trip_data_table$velocity_check)) {
     bad_velocity_data_row_num = which(!trip_data_table$velocity_check)[1]
     
-    before_start_row <- bad_velocity_data_row_num - num_rows_before_after
-    before_end_row <- bad_velocity_data_row_num - 1
-    before <- trip_data_table[before_start_row : before_end_row]
-    
-    after_start_row <- bad_velocity_data_row_num + num_rows_before_after
-    after_end_row <- bad_velocity_data_row_num + 2 * num_rows_before_after - 1
-    after <- trip_data_table[after_start_row : after_end_row]
-    
-    x_before <- before$x[num_rows_before_after]
-    y_before <- before$y[num_rows_before_after]
-    velocity_before <- mean(before$velocity)
-    angle_before <- mean(before$angle)
-    
-    x_after <- after$x[1]
-    y_after <- after$y[1]
-    velocity_after <- mean(after$velocity)
-    angle_after <- mean(after$angle)
-    
-    interpolated_xy <- interpolate_xy(x_before, y_before, velocity_before, angle_before,
-                                      x_after, y_after, velocity_after, angle_after)
-    
-    d <- data.table(rbind.fill(before, as.data.table(interpolated_xy), after))
-    d <- calc_trip_data(d)
-    num_rows <- nrow(d)
-    d <- d[-c(1 : num_rows_before_after, (num_rows - num_rows_before_after + 1) : num_rows)]
-    
-    trip_data_table <- rbind(trip_data_table[1 : before_end_row], d,
-                             trip_data_table[after_start_row : nrow(trip_data_table)])
+    if (bad_velocity_data_row_num <= num_rows_before_after) {
+      trip_data_table <- trip_data_table[-c(1 : bad_velocity_data_row_num)]
+    } else if (bad_velocity_data_row_num > nrow(trip_data_table) - 2 * num_rows_before_after) {
+      trip_data_table <- trip_data_table[1 : (bad_velocity_data_row_num - 1)]
+    } else {
+      before_start_row <- bad_velocity_data_row_num - num_rows_before_after
+      before_end_row <- bad_velocity_data_row_num - 1
+      before <- trip_data_table[before_start_row : before_end_row]
+      
+      after_start_row <- bad_velocity_data_row_num + num_rows_before_after
+      after_end_row <- bad_velocity_data_row_num + 2 * num_rows_before_after - 1
+      after <- trip_data_table[after_start_row : after_end_row]
+      
+      x_before <- before$x[num_rows_before_after]
+      y_before <- before$y[num_rows_before_after]
+      velocity_before <- mean(before$velocity)
+      angle_before <- mean(before$angle)
+      
+      x_after <- after$x[1]
+      y_after <- after$y[1]
+      velocity_after <- mean(after$velocity)
+      angle_after <- mean(after$angle)
+      
+      interpolated_xy <- interpolate_xy(x_before, y_before, velocity_before, angle_before,
+                                        x_after, y_after, velocity_after, angle_after)
+      if ((!is.null(interpolated_xy)) & is.atomic(interpolated_xy)) {
+        return('skipped')
+      }
+      
+      d <- data.table(rbind.fill(before, as.data.table(interpolated_xy), after))
+      d <- calc_trip_data(d)
+      num_rows <- nrow(d)
+      d <- d[-c(1 : num_rows_before_after, (num_rows - num_rows_before_after + 1) : num_rows)]
+      
+      trip_data_table <- rbind(trip_data_table[1 : before_end_row], d,
+                               trip_data_table[after_start_row : nrow(trip_data_table)])
+    }
   }
   trip_data_table
 }
 
 
 clean_velocity_data_for_all_driver_trips <- function(superfolder_path) {
+  source('Visualization.R')
   data_folder_path <- file.path(superfolder_path, 'drivers')
   drivers <- list_drivers(data_folder_path)
   num_drivers <- length(drivers)
   unclean <- list()
   unclean_count <- 0
+  skipped <- list()
   visualization_folder_path <- file.path(superfolder_path, 'data_cleaning_visuals')
   for (i in 1 : num_drivers) {
     progress = 100 * i / num_drivers
     driver <- drivers[i]
     driver_folder_path <- file.path(data_folder_path, driver) 
     for (trip in 1 : 200) {
+      cat('Checking Driver #', driver, ' (', i, ' / ', num_drivers,
+          ' = ', formatC(progress, format="f", digits = 1), '%) Trip #', trip,
+          ' | unclean trips so far = ', unclean_count, '   \r', sep = "")
       trip_data <- calc_trip_data(read_driver_trip(data_folder_path, driver, trip))
       if (any(!trip_data$velocity_check)) {
         unclean_count <- unclean_count + 1
@@ -443,17 +494,25 @@ clean_velocity_data_for_all_driver_trips <- function(superfolder_path) {
                          paste(driver, '_', trip, '_bad.png', sep = "")),
                plot_trip(trip_data, color="blue"))
         
-        trip_data <- clean_velocity_data(trip_data)
-        ggsave(file.path(visualization_folder_path,
-                         paste(driver, '_', trip, '_clean.png', sep = "")),
-               plot_trip(trip_data, color="blue"))
+        #trip_data <- clean_velocity_data(trip_data)
+        #if ((!is.null(trip_data)) & is.atomic(trip_data)) {
+        #  if (driver %in% names(skipped)) {
+        #    skipped[[driver]] <- append(skipped[[driver]], trip)
+        #  } else {
+        #    skipped[[driver]] <- trip
+        #  }
+        #} else {
+        #  ggsave(file.path(visualization_folder_path,
+        #                   paste(driver, '_', trip, '_clean.png', sep = "")),
+        #         plot_trip(trip_data, color="blue"))
+        #  saveRDS(trip_data, file.path(data_folder_path, driver, paste(trip, '.RDS', sep = "")))
+        #}
+      } else {
+        saveRDS(trip_data, file.path(data_folder_path, driver, paste(trip, '.RDS', sep = "")))
       }
-      cat('Checked Driver #', driver, ' (', i, ' / ', num_drivers,
-          ' = ', formatC(progress, format="f", digits = 1), '%) Trip #', trip,
-          ' | unclean trips so far = ', unclean_count, '   \r', sep = "")
-      saveRDS(trip_data, file.path(data_folder_path, driver, paste(trip, '.RDS', sep = "")))
     }
   }
   saveRDS(unclean, file.path(superfolder_path, 'unclean_velocity_data_cases.RDS'))
-  unclean
+  #saveRDS(skipped, file.path(superfolder_path, 'unclean_velocity_data_cases_skipped.RDS'))
+  list(unclean=unclean)  #, skipped=skipped
 }

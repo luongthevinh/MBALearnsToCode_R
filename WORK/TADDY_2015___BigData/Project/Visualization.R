@@ -1,22 +1,21 @@
-plot_trip <- function(trip_data_table, arrow_size_mm = 1, title="", ...)
-{
-  library(ggplot2)
-  library(grid)
-  source("Data_and_Features.R")
-  
-  if (check_trip_data_quality(trip_data_table))
-  {
+library(ggplot2)
+library(GGally)
+library(grid)
+source("Data_and_Features.R")
+
+
+plot_trip <- function(trip_data_table, arrow_size_mm = 1, title="", ...) {
+  if (all(trip_data_table$velocity_check)) {
     ggp <- ggplot(trip_data_table, aes(x, y)) +
       geom_segment(aes(xend = x + dx, yend = y + dy),
                    arrow = arrow(length = unit(arrow_size_mm, "mm")), ...) +
       ggtitle(title)
-  }
-  else {
+  } else {
     d <- trip_data_table
     d[, `:=`(bad_x = as.numeric(NA),
              bad_y = as.numeric(NA))]
-    d[bad_trip_data_indices(d), `:=`(bad_x = x,
-                                     bad_y = y)]
+    d[bad_velocity_data_indices(d), `:=`(bad_x = x,
+                                         bad_y = y)]
     ggp <- ggplot(trip_data_table, aes(x, y)) +
       geom_segment(aes(xend = x + dx, yend = y + dy),
                    arrow = arrow(length = unit(arrow_size_mm, "mm")), ...) +
@@ -27,11 +26,15 @@ plot_trip <- function(trip_data_table, arrow_size_mm = 1, title="", ...)
 }
 
 
+plot_trip_data_matrix <- function(trip_data_table) {
+   ggpairs(trip_data_table[, .(velocity, acceleration,
+                                 angular_velocity, #abs_angular_velocity,
+                                 angular_acceleration)])  #, abs_angular_acceleration
+}
+
+
 multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL)
 {
-  library(grid)
-  
-  # Make a list from the ... arguments and plotlist
   plots <- c(list(...), plotlist)
   
   numPlots = length(plots)
