@@ -7,23 +7,23 @@ list_drivers <- function(data_folder_path) {
 }
 
 
-read_driver_trip <- function(data_folder_path, driver, trip) {
-  fread(file.path(data_folder_path, driver, paste(trip, '.csv', sep='')))
+read_driving_trip <- function(data_folder_path, driver, trip) {
+  fread(file.path(data_folder_path, driver, paste(trip, '.csv', sep = "")))
 }
 
 
-euclidean_norm <- function(x1, y1, x2 = 0, y2 = 0) {
-  ((x2 - x1) ^ 2 + (y2 - y1) ^ 2) ^ 0.5
+euclidean_norm <- function(x1, y1, x2 = 0., y2 = 0.) {
+  ((x2 - x1) ^ 2 + (y2 - y1) ^ 2) ^ .5
 }
 
 
-scalar_product <- function(x1, y1, x2 = 0, y2 = 0) {
+scalar_product <- function(x1, y1, x2, y2) {
   x1 * x2 + y1 * y2
 }
 
 
-angle_between_2_points <- function(x_from, y_from, x_to, y_to) {
-  atan2(y_to - y_from, x_to - x_from)
+angle_between_2_points <- function(from_x, from_y, to_x, to_y) {
+  atan2(to_y - from_y, to_x - from_x)
 }
 
 
@@ -33,32 +33,36 @@ angular_difference <- function(from_angle, to_angle) {
 }
 
 
-calc_velocity_vector <- function(trip_data_table) {
+calc_velocity <- function(trip_data_table) {
   trip_data_table[, `:=`(dx = c(NA, diff(x)),
                          dy = c(NA, diff(y)))]
-  trip_data_table$dx[1] = trip_data_table$dx[2]
-  trip_data_table$dy[1] = trip_data_table$dy[2]
-  trip_data_table
-}
-
-
-calc_acceleration_vector <- function(trip_data_table) {
-  trip_data_table[, `:=`(ddx = c(NA, diff(dx)),
-                         ddy = c(NA, diff(dy)))]
-  trip_data_table$ddx[1] = trip_data_table$ddx[2]
-  trip_data_table$ddy[1] = trip_data_table$ddy[2]
-  trip_data_table
-}
-
-
-calc_velocity <- function(trip_data_table) {
+  trip_data_table$dx[1] <- trip_data_table$dx[2]
+  trip_data_table$dy[1] <- trip_data_table$dy[2]
   trip_data_table[, velocity := euclidean_norm(dx, dy)]
   trip_data_table
 }
 
 
 calc_acceleration <- function(trip_data_table) {
+  trip_data_table[, `:=`(ddx = c(NA, diff(dx)),
+                         ddy = c(NA, diff(dy)))]
+  trip_data_table$ddx[1] <- trip_data_table$ddx[2]
+  trip_data_table$ddy[1] <- trip_data_table$ddy[2]
   trip_data_table[, acceleration := scalar_product(ddx, ddy, dx, dy) / velocity]
+  trip_data_table[is.na(acceleration), acceleration := euclidean_norm(ddx, ddy)]
+  trip_data_table[, abs_acceleration := abs(acceleration)]
+  trip_data_table
+}
+
+
+calc_jerk <- function(trip_data_table) {
+  trip_data_table[, `:=`(dddx = c(NA, diff(ddx)),
+                         dddy = c(NA, diff(ddy)))]
+  trip_data_table$dddx[1] <- trip_data_table$dddx[2]
+  trip_data_table$dddy[1] <- trip_data_table$dddy[2]
+  trip_data_table[, jerk := scalar_product(dddx, dddy, ddx, ddy) / euclidean_norm(ddx, ddy)]
+  trip_data_table[is.na(jerk), jerk := euclidean_norm(dddx, dddy)]
+  trip_data_table[, abs_jerk := abs(jerk)]
   trip_data_table
 }
 
@@ -80,13 +84,13 @@ calc_angular_velocity <- function(trip_data_table) {
 
 calc_angular_acceleration <- function(trip_data_table) {
   trip_data_table[, angular_acceleration := c(NA, diff(angular_velocity))]
-  trip_data_table$angular_acceleration[1] = trip_data_table$angular_acceleration[2]
+  trip_data_table$angular_acceleration[1] <- trip_data_table$angular_acceleration[2]
   trip_data_table[, abs_angular_acceleration := abs(angular_acceleration)]
   trip_data_table  
 }
 
 
-calc_velocity_validity <- function(trip_data_table, max_velocity_m_per_s=50) {
+calc_velocity_validity <- function(trip_data_table, max_velocity_m_per_s = 36) {
   trip_data_table[, velocity_check := velocity < max_velocity_m_per_s]
   trip_data_table
 }
@@ -106,7 +110,7 @@ calc_overall_data_validity <- function(trip_data_table) {
 }
 
 
-calc_trip_data <- function(trip_data_table, max_velocity_m_per_s = 50,
+calc_trip_data <- function(trip_data_table, max_velocity_m_per_s = 36,
                            max_absolute_angular_velocity = 5 / 6 * pi) {
   calc_overall_data_validity(
     calc_angular_velocity_validity(
@@ -114,10 +118,9 @@ calc_trip_data <- function(trip_data_table, max_velocity_m_per_s = 50,
         calc_angular_acceleration(
           calc_angular_velocity(
             calc_angle(
-              calc_acceleration(
-                calc_velocity(
-                  calc_acceleration_vector(
-                    calc_velocity_vector(trip_data_table))))))),
+              calc_jerk(
+                calc_acceleration(
+                  calc_velocity(trip_data_table)))))),
         max_velocity_m_per_s = max_velocity_m_per_s),
       max_absolute_angular_velocity = max_absolute_angular_velocity))
 }
@@ -132,6 +135,185 @@ bad_velocity_data_indices <- function(trip_data_table) {
   which(!trip_data_table$velocity_check)
 }
 
+
+build_one_vs_all_data_sets <- function(driver, data_folder_path, unclean_velocity_data_cases,
+                                       train_proportion = .68, min_velocity_m_per_s = 2) {
+  driver <- as.character(driver)
+  other_drivers <- setdiff(list_drivers(data_folder_path), driver)
+  data_sets <- list(train_indices = list(), test_indices = list(),
+                    train = NULL, test = NULL)
+  if (driver %in% names(unclean_velocity_data_cases)) {
+    clean_trip_indices <- setdiff(1 : 200, unclean_velocity_data_cases[[driver]])
+  } else {
+    clean_trip_indices <- 1 : 200
+  }
+  data_sets$train_indices[[driver]] <-
+    sample(clean_trip_indices, round(train_proportion * length(clean_trip_indices), digits = 0))
+  data_sets$test_indices[[driver]] <-
+    setdiff(clean_trip_indices, data_sets$train_indices[[driver]])
+  
+  num_train_trips <- length(data_sets$train_indices[[driver]])
+  for (trip in data_sets$train_indices[[driver]]) {
+    d <- calc_trip_data(read_driving_trip(data_folder_path, driver, trip))[
+      (velocity > min_velocity_m_per_s) & (overall_check == TRUE), ]
+    if (nrow(d) > 0) {
+      d$driver_class <- "self"
+      d$driver <- driver
+      d$trip <- trip
+      if (is.null(data_sets$train)) {
+        data_sets$train <- d
+      } else {
+        data_sets$train <- rbind(data_sets$train, d)
+      }
+    } else {
+      data_sets$train_indices[[driver]] <- setdiff(data_sets$train_indices[[driver]], trip)
+      num_train_trips <- num_train_trips - 1
+    }
+  }
+  num_train_trips_by_other <- 0
+  while (num_train_trips_by_other < num_train_trips) {
+    other_driver <- sample(other_drivers, 1)
+    if (other_driver %in% names(unclean_velocity_data_cases)) {
+      trip <- sample(setdiff(1 : 200, unclean_velocity_data_cases[[other_driver]]), 1)
+    } else {
+      trip <- sample(1 : 200, 1)
+    }
+    d <- calc_trip_data(read_driving_trip(data_folder_path, other_driver, trip))[
+      (velocity > min_velocity_m_per_s) & (overall_check == TRUE), ]
+    if (nrow(d) > 0) {
+      num_train_trips_by_other <- num_train_trips_by_other + 1
+      if (other_driver %in% names(data_sets$train_indices)) {
+        data_sets$train_indices[[other_driver]] <- append(data_sets$train_indices[[other_driver]], trip)
+      } else {
+        data_sets$train_indices[[other_driver]] <- trip
+      }
+      d$driver_class <- "other"
+      d$driver <- other_driver
+      d$trip <- trip
+      data_sets$train <- rbind(data_sets$train, d)
+    }
+  }
+  data_sets$train$driver_class <- factor(data_sets$train$driver_class)
+  
+  num_test_trips <- length(data_sets$test_indices[[driver]])
+  for (trip in data_sets$test_indices[[driver]]) {
+    d <- calc_trip_data(read_driving_trip(data_folder_path, driver, trip))[
+      (velocity > min_velocity_m_per_s) & (overall_check == TRUE), ]
+    if (nrow(d) > 0) {
+      d$driver_class <- "self"
+      d$driver <- driver
+      d$trip <- trip
+      if (is.null(data_sets$test)) {
+        data_sets$test <- d
+      } else {
+        data_sets$test <- rbind(data_sets$test, d)
+      }
+    } else {
+      data_sets$test_indices[[driver]] <- setdiff(data_sets$test_indices[[driver]], trip)
+      num_test_trips <- num_test_trips - 1
+    }
+  }
+  num_test_trips_by_other <- 0
+  while (num_test_trips_by_other < num_test_trips) {
+    other_driver <- sample(other_drivers, 1)
+    if (other_driver %in% names(unclean_velocity_data_cases)) {
+      trip <- sample(setdiff(1 : 200, unclean_velocity_data_cases[[other_driver]]), 1)
+    } else {
+      trip <- sample(1 : 200, 1)
+    }
+    d <- calc_trip_data(read_driving_trip(data_folder_path, other_driver, trip))[
+      (velocity > min_velocity_m_per_s) & (overall_check == TRUE), ]
+    if (nrow(d) > 0) {
+      num_test_trips_by_other <- num_test_trips_by_other + 1
+      if (other_driver %in% names(data_sets$test_indices)) {
+        data_sets$test_indices[[other_driver]] <- append(data_sets$test_indices[[other_driver]], trip)
+      } else {
+        data_sets$test_indices[[other_driver]] <- trip
+      }
+      d$driver_class <- "other"
+      d$driver <- other_driver
+      d$trip <- trip
+      data_sets$test <- rbind(data_sets$test, d)
+    }
+  }
+  data_sets$test$driver_class <- factor(data_sets$test$driver_class)
+  
+  data_sets
+}
+
+
+predict_driver <- function(rf_model, data_set, indices, threshold = .5) {
+  results <- list(driver = character(),
+                  trip = integer(),
+                  truth = character(),
+                  pred = character())
+  p <- predict(rf_model, newdata = data_set, type = "prob")
+  data_set$log_p_other <- log(p[, 1])
+  data_set$log_p_self <- log(p[, 2])
+  drivers <- names(indices)
+  threshold_log_odds <- log(threshold / (1 - threshold))
+  for (dr in drivers) {
+    trips <- indices[[dr]]
+    for (tr in trips) {
+      results$driver <- append(results$driver, dr)
+      results$trip <- append(results$trip, tr)
+      d <- data_set[(driver == dr) & (trip == tr)]
+      results$truth <- append(results$truth, as.character(d$driver_class[1]))
+      log_odds <- sum(d$log_p_self) - sum(d$log_p_other)
+      tryCatch({
+        if (log_odds > threshold_log_odds) {
+          results$pred <- append(results$pred, "self")
+        } else {
+          results$pred <- append(results$pred, "other")
+        }
+      }, error = function(err) {
+        results$pred <- append(results$pred, NA)
+      })
+    }
+  }
+  results <- as.data.table(results)
+  results[, `:=`(pos = (truth == "self"),
+                 pred_pos = (pred == "self"))]
+  results[, `:=`(neg = !pos,
+                 pred_neg = !pred_pos)]
+  results[, `:=`(true_pos = pos & pred_pos,
+                 true_neg = neg & pred_neg,
+                 false_pos = neg & pred_pos,
+                 false_neg = pos & pred_neg)]
+  results
+}
+
+
+evaluate_results <- function(drivers_modelled) {
+  d <- NULL
+  for (driver in drivers_modelled) {
+    driver_results <- readRDS(paste("driver_", driver, ".RDS", sep = ""))
+    if (is.null(d)) {
+      d <- driver_results
+    } else {
+      d <- rbind(d, driver_results)
+    }
+  }
+  
+}
+
+## plot the ROC curve for classification of y with p
+roc <- function(p,y, ...){
+  y <- factor(y)
+  n <- length(p)
+  p <- as.vector(p)
+  Q <- p > matrix(rep(seq(0,1,length=100),n),ncol=100,byrow=TRUE)
+  specificity <- colMeans(!Q[y==levels(y)[1],])
+  sensitivity <- colMeans(Q[y==levels(y)[2],])
+  plot(1-specificity, sensitivity, type="l", ...)
+  abline(a=0,b=1,lty=2,col=8)
+}
+
+
+
+
+# DATA CLEANING FUNCTIONS
+# _______________________
 
 
 intersection_xy_and_signed_side_lengths <- function(x1, y1, a1, x2, y2, a2) {
@@ -210,13 +392,6 @@ UNIT_TEST___intersection_xy <- function(num_times = 1000) {
   }
   cat(num_successes, 'Successes out of', num_times, 'Tests')
 }
-
-
-
-
-
-
-
 
 
 interpolate_xy <- function(x1, y1, v1, a1, x2, y2, v2, a2, max_acute_angle = 5 * pi / 6,
@@ -482,7 +657,7 @@ clean_velocity_data_for_all_driver_trips <- function(superfolder_path) {
       cat('Checking Driver #', driver, ' (', i, ' / ', num_drivers,
           ' = ', formatC(progress, format="f", digits = 1), '%) Trip #', trip,
           ' | unclean trips so far = ', unclean_count, '   \r', sep = "")
-      trip_data <- calc_trip_data(read_driver_trip(data_folder_path, driver, trip))
+      trip_data <- calc_trip_data(read_driving_trip(data_folder_path, driver, trip))
       if (any(!trip_data$velocity_check)) {
         unclean_count <- unclean_count + 1
         if (driver %in% names(unclean)) {

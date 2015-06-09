@@ -4,12 +4,25 @@ library(grid)
 source("Data_and_Features.R")
 
 
-plot_trip <- function(trip_data_table, arrow_size_mm = 1, title="", ...) {
+plot_trip <- function(trip_data_table, arrow_size_mm = 1, title = "", self_or_other = NULL, ...) {
   if (all(trip_data_table$velocity_check)) {
-    ggp <- ggplot(trip_data_table, aes(x, y)) +
-      geom_segment(aes(xend = x + dx, yend = y + dy),
-                   arrow = arrow(length = unit(arrow_size_mm, "mm")), ...) +
-      ggtitle(title)
+    if (is.null(self_or_other)) {
+      ggp <- ggplot(trip_data_table, aes(x, y)) +
+        geom_segment(aes(xend = x + dx, yend = y + dy),
+                     arrow = arrow(length = unit(arrow_size_mm, "mm")), ...) +
+        ggtitle(title)
+    } else {
+     d <- trip_data_table
+     d[, `:=`(self_x = as.numeric(NA),
+              self_y = as.numeric(NA))]
+     d[as.logical(self_or_other) == TRUE, `:=`(self_x = x,
+                                     self_y = y)]
+     ggp <- ggplot(trip_data_table, aes(x, y)) +
+       geom_segment(aes(xend = x + dx, yend = y + dy),
+                    arrow = arrow(length = unit(arrow_size_mm, "mm")), ...) +
+       geom_point(aes(self_x, self_y), color='magenta', size=3) +
+       ggtitle(title)
+    }
   } else {
     d <- trip_data_table
     d[, `:=`(bad_x = as.numeric(NA),
