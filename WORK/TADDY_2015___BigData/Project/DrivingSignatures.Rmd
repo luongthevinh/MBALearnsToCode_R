@@ -1,5 +1,4 @@
-
-num_clean_trips <- list()---
+---
 title: 'Driving Style Signatures: Who''s Behind the Steering Wheel?'
 output: pdf_document
 fontsize: 12
@@ -30,12 +29,9 @@ library(gamlr)
 library(randomForest)
 library(lubridate)
 # Start parallel computing cluster over multi cores
-library(doParallel)
-cl <- makePSOCKcluster(5)
-clusterEvalQ(cl, library(foreach))
-#registerDoParallel(cl)
-#cl <- makeCluster(detectCores()-1)
-registerDoParallel(cl)
+library(doSNOW)
+cl <- makeCluster(6, type = "SOCK")
+registerDoSNOW(cl)
 getDoParWorkers()
 ```
 
@@ -44,18 +40,18 @@ getDoParWorkers()
 
 The field of automotive insurance has a number of important questions regarding individuals' driving behaviors:
 
-i. What data features are needed to characterize a person's driving habits? - for one thing, such features can be used to appropriately price accident risk as well as cross-sell related insurance products;
+i. What data features are necessary to characterize a person's driving habits? - for one thing, such features can be used to appropriately price accident risk as well as cross-sell related insurance products;
 
-ii. In the case of an accident claim, given such data features, how well can we tell if the insured person - and not another person - is really behind the steering wheel when the incident occurs?
+ii. In the case of an accident claim, given such data features, how well can we verify whether the insured person - and not another person - is really behind the steering wheel when the incident occurs?
 
-The advent of vehicle-mounted telematics devices has provided rich new data sources to address these issues. In this project, we attempt to develop a method to detect different people's own driving style "signatures" from a series of second-by-second GPS coordinate readings from their cars' telematics. We will show that by using just simple features such as velocity, acceleration, jerk, angular velocity and angular acceleration, we could identify with about 80% accuracy whether the insured driver is driving his/her car.
+The advent of vehicle-mounted telematics devices has provided rich new data sources to address these issues. In this project, we attempt to develop a method to detect different people's own driving style "signatures" from a series of second-by-second GPS coordinate readings from their cars' telematics. We will show that by using just simple features such as velocity, acceleration, jerk, angular velocity and angular acceleration, we could already identify with about 70-80% accuracy whether the insured driver is driving his/her car.
 
 
-# 1. Data and Data-Preprocessing
+# 1. Data and Data Preprocessing
 
 ## 1.1. Raw Data and Processed Higher-Order Features
 
-We obtained second-by-second GPS ($x_t$, $y_t$) coordinate data from over half a million anonymized driving trips (200 trips by each of over 2,700 individual drivers) from [French insurer AXA's Kaggle competition data set](http://www.kaggle.com/c/axa-driver-telematics-analysis). This large dataset occupies nearly 6 GB of storage space when unpacked.
+We obtained second-by-second GPS ($x_t$, $y_t$) coordinate data from over half a million anonymized driving trips (200 trips by each of over 2,700 individual drivers) from [French insurer AXA's Kaggle competition data set](http://www.kaggle.com/c/axa-driver-telematics-analysis). This large dataset occupies nearly 6 GB of digital storage space once unpacked.
 
 One trip is depicted below:
 
@@ -66,7 +62,7 @@ plot_trip(d_1_3, 0.001, title = "Driver #1 Trip #3", color = "blue")
 
 For anonymization purposes, each trip's starting point is centered at (0, 0) and the subsequent coordinates are rotated by a random angle. 
 
-From the raw ($x_t$, $y_t$) data, we derived a number of higher-order features, measured at every second of each driving trip, as follows:
+From the raw ($x_t$, $y_t$) data, we derived a number of higher-order features, measured at every second *t* of each driving trip, as follows:
 
 $$
 \begin{aligned}
@@ -114,12 +110,12 @@ $$
   & \textbf{absolute angular acceleration: } |\Delta \Delta \theta_t| \end{aligned}
 $$
 
-Note that because the coordinates ($x_t$, $y_t$) and the angles $\theta_t$ are already randomly shifted and rotated by the data provider, they will not be of any value in the subsequent modelling task. Only the variables signifying the *rates of change* will be considered.
+Note that because the coordinates ($x_t$, $y_t$) and the angles $\theta_t$ are already randomly shifted and rotated by the data provider, they will not be of any value in the subsequent modeling task. Only the variables signifying the *rates of change* will be considered.
 
 
 ## 1.2. Data Cleaning
 
-Before we could proceed with analyzing this large data set, we had to attend to some data integrity issues. It turns out that due to lost data transmission signals and/or some extreme anonymization measures, numerous raw driving trip data sets are plagued with coordinate "jumps", i.e. missing chunks of GPS readings. One example is portrayed below:
+Before we could proceed with analyzing this large data set, we had to attend to some serious data integrity issues. It turns out that due to lost data transmission signals and/or some extreme anonymization measures, numerous raw driving trip data sets are plagued with coordinate "jumps", i.e. missing chunks of GPS readings. One example is portrayed below:
 
 ```{r warning=FALSE}
 d_1_136 <- calc_trip_data(read_driving_trip(data_folder_path, 1, 136))
@@ -127,19 +123,19 @@ plot_trip(d_1_136[241:320], 3, title = "Driver #1 Trip #136 - portion with missi
           color = "blue")
 ```
 
-This problem is very pervasive, present data on over 40,000 driving trips by almost all of the over 2,700 drivers in the database (only eight drivers have no identified missing data).
+This problem is very pervasive, present in over 40,000 driving trips by almost all of the over 2,700 drivers in the database. Only eight drivers seem to have no missing data.
 
-In the above depicted case, as well as in other missing data cases, the corrupt data portions (highlighted by red dots in the plots) manifest themselves quite apparently by an unreasonably large distance from ($x_{t - 1}, y_{t - 1}$) to ($x_t, y_t$), or equivalently an unreasonably high velocity $v_t$ estimated from such consecutive pairs of coordinates. We hence devised a method to detect and interpolate the missing data, described at a high level as follows:
+In the above depicted case, as well as in other missing data cases, the corrupt data portions - highlighted by red dots in the plots - manifest themselves quite apparently by an unreasonably large distance from ($x_{t - 1}, y_{t - 1}$) to ($x_t, y_t$), or equivalently an unreasonably high velocity $v_t$ estimated from such consecutive pairs of coordinates. We hence devised a method to detect and interpolate the missing data, described at a high level as follows:
 
-* detect data rows with derived velocity $v_t$ > 36 meters/second, which is approximately 80 miles/hour, the upper bound of the [U.S. speed limits](http://en.wikipedia.org/wiki/Speed_limits_in_the_United_States_by_jurisdiction), or, equivalently, 130 kilometers/hour, the upper bound of the [European speed limits](http://www.theaa.ie/AA/Motoring-advice/Driving-in-Europe/Speed-Limits.aspx) *(when one's car has a telematics device mounted, one should be quite properly incentivized not to speed!)*;
+* detect time instances *t* with derived velocity $v_t$ > 36 meters/second, which is approximately 80 miles/hour, the upper bound of the [U.S. speed limits](http://en.wikipedia.org/wiki/Speed_limits_in_the_United_States_by_jurisdiction), or, equivalently, 130 kilometers/hour, the upper bound of the [European speed limits](http://www.theaa.ie/AA/Motoring-advice/Driving-in-Europe/Speed-Limits.aspx) - when one's car has a telematics device mounted, one should be quite properly incentivized not to over-speed!;
 
-* look at time windows of 3 seconds before and 3 seconds after each of such instance, and estimate the average velocities $v_\text{before}$ and $v_\text{after}$ and angular directions $\theta_\text{before}$ and $\theta_\text{after}$;
+* look at time windows of 3 seconds before and 3 seconds after each of such instance *t*, and estimate the average velocities $v_{\text{before } t}$ and $v_{\text{after } t}$ and angular directions $\theta_{\text{before } t}$ and $\theta_{\text{after } t}$;
 
-* by certain polygonal approximations, estimate the length of one or several smooth parabolic arcs spanning the locations ($x_\text{before}$, $y_\text{before}$) and ($x_\text{after}$, $y_\text{after}$) and with tangents at angles $\theta_\text{before}$ and $\theta_\text{after}$ at those points *(it will become apparent in certain visualizations below why parabolic curves are more natural than straight lines or circular curves)*;
+* by certain polygonal approximations, estimate the length of one or several smooth ***parabolic*** arcs spanning the locations ($x_{\text{before } t}$, $y_{\text{before } t}$) and ($x_{\text{after } t}$, $y_{\text{after } t}$) and with tangents at angles $\theta_{\text{before } t}$ and $\theta_{\text{after } t}$ at those points - it will become apparent in certain visualizations below why parabolic curves are more natural than straight lines or circular curves;
 
-* estimate the number of seconds the vehicle needs to take to traverse such parabolic arc(s) at velocity $v_\text{mean} = \frac{1}{2}(v_\text{before} + v_\text{after})$; and
+* estimate the number of seconds the vehicle needs to take to traverse such parabolic arc(s) at velocity $v_\text{mean} = \frac{1}{2}(v_{\text{before } t} + v_{\text{after } t})$; and
 
-* interpolate missing intermediate locations along the parabolic arc(s), with certain technical adjustments to make the vehicle accelerate or decelerate evenly from $v_\text{before}$ to $v_\text{after}$.
+* interpolate missing intermediate locations along the parabolic arc(s), with certain technical adjustments to make the vehicle accelerate or decelerate evenly from $v_{\text{before } t}$ to $v_{\text{after } t}$.
 
 With such a data interpolation method, the above case of Driver #1's Trip #136 could be corrected to the following:
 
@@ -196,15 +192,15 @@ p2 <- plot_trip(d_20_13_corrected, 1.3, title = "Dr#20 Tr#13 - interpolated",
 multiplot(p1, p2, cols = 2)
 ```
 
-We hence decided to limit recovery of missing data to cases with three or fewer missing sections, and discard the more seriously impaired cases. Overall, we recovered missing data for nearly 33,000 out of the 40,000 affected driving trip data sets.
+We hence decided to limit recovery of missing data to cases with three or fewer missing sections, and discard the more seriously impaired cases. Overall, we recovered missing data for nearly 33,000 out of the over 40,000 affected driving trip data sets.
 
 Additionally, we removed rows of data with:
 
 * velocities $v_t$ < 2 meters/second (about 4-5 miles/hour), because below that threshold cars are not meaningfully moving; and/or
 
-* absolute angular velocities $|\Delta \theta_t|$ > 150 degrees, because such turns are too sharp for cars to reasonably perform in one second
+* absolute angular velocities $|\Delta \theta_t|$ > 150 degrees, because such turns are too sharp for cars to reasonably perform in one second (unless Hollywood action-movie cascadeurs happen to buy insurance from AXA...).
 
-In terms of time cost, our various data verification and cleaning steps took us about 100 hours on a single computer running on seven cores.
+In terms of time cost, our various data verification and cleaning steps took over 100 hours on six CPU cores of a single computer.
 
 
 # 2. Driver Identification as Classification Problem
@@ -212,21 +208,52 @@ In terms of time cost, our various data verification and cleaning steps took us 
 Following the above data verification and cleaning procedures, the question for us to address now is that, with such a database of labeled personal driving trip data (raw GPS plus derived features), whether we can effectively distinguish among different drivers' different driving styles.
 
 
-## 2.1. Problem Framing
+## 2.1. General Problem Framing
 
-For each individual Driver *D*, we have got a collection of labeled driving trips representing his/her typical driving habits. Because we have over 2,700 such drivers in the database, for each Driver *D* we have also got an abundance of labeled driving trips that are ***not*** by Driver *D*.
+For each individual Driver *D*, we have got a collection of labeled driving data representing his/her typical driving habits. Because we have over 2,700 such drivers in the database, for each Driver *D* we also have an abundance of labeled driving data that are ***not*** by Driver *D*.
 
-With such labeled data and a "one-vs.-all" approach, we can train a discriminative classification model to distinguish the driving style of Driver *D* versus those of other drivers. At test time, the trained discriminative model will be given an unlabeled driving trip data set comprising GPS coordinate readings and the related derived higher-order features, and the model will be evaluated according to how well it classifies whether or not the trip is by Driver *D*.
+With such labeled data and a "one-vs.-all" approach, we can train a discriminative classification model to distinguish the driving style of Driver *D* versus an "average" driving style among others. 
 
 
-## 2.2. 
+## 2.2. Classification Models' Granularity Level: Second-by-Second
 
-These features are . Among them, we will focus on several features measuring **rates of change**, namely **velocity**, **acceleration**, **(signed and absolute) angular velocity** and **(signed and absolute) angular acceleration**. For the above depicted trip, the distributions and correlations among these variables are as follows:
+A key modeling decision to make is at what level of granularity we should keep the data features. One possible, and computationally beneficial, choice is to reduce dimensionality by summarizing the features, i.e. velocity, acceleration, jerk, angular velocity and angular acceleration, at the trip level - that is, condensing each driving trip data set with hundreds or thousands of second-by-second observations to a single vector of averages, absolute values, maxima, minima, etc., of the features. However, such an approach would both lose and distort a great deal of information:
+
+* Firstly, it would lose information on the mutual co-occurences of various value ranges of the features during a driving trip; e.g., when looking at trip-level summary statistics, it would be difficult for us to know whether a driver tends to take sharp turns at high velocities or whether he/she tends to speed when driving straight (when angular velocity is near zero).
+
+* Secondly, common sense suggests that the observations that hold strong signals about individual driving styles are likely to be a small portion among the total recorded data on a typical driving trip; that is to say, most of the time most people drive very similarly - e.g. during generally slow urban street driving - and personal driving styles only manifest clearly in very specific maneuvers such as turning at considerable speeds or driving along a highway. If we summarize the features at the trip level, such valuable signals would be swamped by the majority data portions that are indiscriminative.
+
+Because of the above reasons, we decided to build classification models at the ***granularity level of each second of each driving trip*** as follows: for each second *t* of observed data features
+
+* velocity $v_t$,
+* signed and absolute acceleration $a_t$ and |$a_t$|,
+* signed and absolute jerk $j_t$ and |$j_t$|,
+* signed and absolute angular velocity $\Delta \theta_t$ and |$\Delta \theta_t$|, and
+* signed and absolute angular acceleration $\Delta \Delta \theta_t$ and |$\Delta \Delta \theta_t$|,
+
+we asked if that combined observation at time *t* is more likely to have been generated by the subject driver or by another "average" driver. Note the ***implicit simplifying assumption of independence among different time instances*** during a driving trip. This is a strong assumption because there are surely non-zero correlations in practice, especially among consecutive instances. Nonetheless, this would turn out *not* to hamper the effectiveness of our approach. 
+
+A one-vs.-all classification model would be trained for each individual driver *D* on record, with a training data set comprising of 60% of driver *D*'s clean/cleaned trip data sets and an equivalent number of trip data sets randomly sampled from other drivers. Each training data set typically has well over 100,000 labeled observations. At test time, the trained discriminative model would be given an unlabeled driving trip data set of length *T* seconds comprising GPS coordinate readings and the related derived higher-order features per second *t*, and the model would be asked if this trip is more likely to be by driver *D* or another driver. The prediction is performed as follows:
+
+* First of all, the model would score each second *t* of the trip to produce the log of the odds that the observed features at that second *t* are by driver *D*;
+
+* Then, a trip-level log-odds is calculated as the sum of the individual per-second log-odds from *t* = 1 to *t* = *T*, and the trip-level log-odds is compared with a certain decision threshold log-odds (zero by default, corresponding to a probability decision threshold of 50%) to produce the prediction.
+
+
+## 2.3. Modeling Method: Random Forest
+
+We opted for Random Forest for building the one-vs.-all classification models, because of this method's two key benefits:
+
+* Random Forest is fast to train because each individual classification tree is simple, and different trees can be trained in parallel; here, each of our Random Forest models consists of 480 trees trained in parallel on six CPU cores; and
+
+* Random Forest automatically discovers highly relevant interactions among data features, which is crucial in our modeling tasks because individual driving styles are likely to be non-trivial interactions among velocity, acceleration, jerk, angular velocity and angular acceleration.
 
 ```{r}
+
 #unclean <- clean_velocity_data_for_all_driver_trips(superfolder_path)
 
 #unclean <- readRDS(file.path(superfolder_path, "unclean_velocity_data_cases.RDS"))
+
 #drivers <- list_drivers(data_folder_path)
 #num_drivers <- length(drivers)
 #drivers_modelled <- readRDS("./modelling_cache/drivers_modelled.RDS")
@@ -236,29 +263,225 @@ These features are . Among them, we will focus on several features measuring **r
 #    cat("Modelling Driver #", driver, "... ", sep = "")
 #    model_data <- build_one_vs_all_data_sets(driver, data_folder_path, unclean)
 #    train_data <- copy(model_data$train)
-#    random_forest <-
+#    random_forest <- foreach(ntree = rep(80, 6), .combine=combine, .multicombine=TRUE,
+#                             .packages = c('data.table', 'randomForest')) %dopar% {
 #      randomForest(x = train_data[, .(velocity, acceleration, abs_acceleration, jerk, abs_jerk,
 #                                  angular_velocity, abs_angular_velocity,
 #                                  angular_acceleration, abs_angular_acceleration)],
-#                   y = train_data$driver_class)
+#                   y = train_data$driver_class,
+#                   ntree = ntree)
+#    }
+#      
 #    test <- predict_driver(random_forest, copy(model_data$test), model_data$test_indices)
 #    saveRDS(test, paste("./modelling_cache/driver_", driver, ".RDS", sep = ""))
 #    drivers_modelled <- append(drivers_modelled, driver)
 #    saveRDS(drivers_modelled, "./modelling_cache/drivers_modelled.RDS")
-    
-#    num_true_pos <- sum(test$true_pos, na.rm = TRUE)
-#    accuracy <- formatC(100 * (num_true_pos + sum(test$true_neg, na.rm = TRUE)) / nrow(test),
-#                        format = "f", digits = 1)
-#    precision <- formatC(100 * num_true_pos / sum(test$pred_pos, na.rm = TRUE), format = "f", digits = 1)
-#    recall <- formatC(100 * num_true_pos / sum(test$pos, na.rm = TRUE), format = "f", digits = 1)
+#    
+#    results_evaluation <- evaluate_results(test)
+#    num_true_pos <- sum(results_evaluation$true_pos, na.rm = TRUE)
+#    accuracy <-
+#      formatC(100 * (num_true_pos + sum(results_evaluation$true_neg, na.rm = TRUE)) / nrow(results_evaluation),
+#              format = "f", digits = 1)
+#    precision <-
+#      formatC(100 * num_true_pos / sum(results_evaluation$pred_pos, na.rm = TRUE),
+#              format = "f", digits = 1)
+#    recall <-
+#      formatC(100 * num_true_pos / sum(results_evaluation$pos, na.rm = TRUE),
+#              format = "f", digits = 1)
 #    cat("accuracy = ", accuracy, "%, precision = ", precision, "%, recall = ", recall, "%\n",
 #        sep = "")
 #  }
 #}
-
-
-
 ```
+
+
+# 3. Results and Evaluation
+
+To illustrate our modelling approach, let us consider a one-vs.-all classification model trained on trips by an individual driver - Driver #1 - versus randomly sampled trips from other drivers. We can see what the model believes signifies Driver #1's driving style by looking at time instances for which the model predicts high positive-class probabilities:
+
+```{r}
+#unclean <- readRDS(file.path(superfolder_path, "unclean_velocity_data_cases.RDS"))
+model_data_1 <- readRDS('model_data_for_driver_1.RDS')
+  #build_one_vs_all_data_sets(1, data_folder_path, unclean)
+#saveRDS(model_data_1, 'model_data_for_driver_1.RDS')
+#train_data_1 <- copy(model_data_1$train)
+random_forest_1 <- readRDS('C:/Cloud/random_forest_for_driver_1.RDS')
+#  randomForest(x = train_data_1[, .(velocity, acceleration, abs_acceleration, jerk, abs_jerk,
+#                                    angular_velocity, abs_angular_velocity,
+#                                    angular_acceleration, abs_angular_acceleration)],
+#               y = train_data_1$driver_class)
+#saveRDS(random_forest_1, 'C:/Cloud/random_forest_for_driver_1.RDS')
+
+d_1_2 <- calc_trip_data(read_driving_trip(data_folder_path, 1, 2))[
+  (velocity > 2) & (overall_check == TRUE)]
+pred <- predict(random_forest_1, newdata = d_1_2, type = "prob")
+p1 <- plot_trip(d_1_2, 1.3, self_or_other = (pred[, 2] > .95),
+          title = "Dr#1 Tr#2: P>95% highlighted", color = "blue")
+
+d_1_60 <- calc_trip_data(read_driving_trip(data_folder_path, 1, 60))[
+  (velocity > 2) & (overall_check == TRUE)]
+pred <- predict(random_forest_1, newdata = d_1_60, type = "prob")
+p2 <- plot_trip(d_1_60, 1.3, self_or_other = (pred[, 2] > .90),
+          title = "Dr#1 Tr#60: P>90% highlighted", color = "blue")
+
+multiplot(p1, p2, cols = 2)
+```
+
+We can see that Driver #1's most characteristic maneuvers seem to cluster around bends, which suggests that his/her combinations of velocity, acceleration, jerk, angular velocity and angular acceleration just before, during and just after turning are very different from those by another "average" driver.
+
+The signature styles differ quite diversely among drivers. For example, Driver #12 seem to have highly characteristic behaviors along straight roads or highways: 
+
+```{r}
+#unclean <- readRDS(file.path(superfolder_path, "unclean_velocity_data_cases.RDS"))
+model_data_12 <- readRDS('model_data_for_driver_12.RDS')
+  #build_one_vs_all_data_sets(12, data_folder_path, unclean)
+#saveRDS(model_data_12, 'model_data_for_driver_12.RDS')
+#train_data_12 <- copy(model_data_12$train)
+random_forest_12 <- readRDS('C:/Cloud/random_forest_for_driver_12.RDS')
+#  randomForest(x = train_data_12[, .(velocity, acceleration, abs_acceleration, jerk, abs_jerk,
+#                                    angular_velocity, abs_angular_velocity,
+#                                    angular_acceleration, abs_angular_acceleration)],
+#               y = train_data_12$driver_class)
+#saveRDS(random_forest_12, 'C:/Cloud/random_forest_for_driver_12.RDS')
+
+d_12_2 <- calc_trip_data(read_driving_trip(data_folder_path, 12, 2))[
+  (velocity > 2) & (overall_check == TRUE)]
+pred <- predict(random_forest_12, newdata = d_12_2, type = "prob")
+p1 <- plot_trip(d_12_2, 1.3, self_or_other = (pred[, 2] > .85),
+          title = "Dr#12 Tr#2: P>85% highlighted", color = "blue")
+
+d_12_6 <- calc_trip_data(read_driving_trip(data_folder_path, 12, 6))[
+  (velocity > 2) & (overall_check == TRUE)]
+pred <- predict(random_forest_12, newdata = d_12_6, type = "prob")
+p2 <- plot_trip(d_12_6, 1., self_or_other = (pred[, 2] > .95),
+          title = "Dr#12 Tr#6: P>95% highlighted", color = "blue")
+
+multiplot(p1, p2, cols = 2)
+```
+
+
+```{r}
+drivers_modelled <- readRDS("./modelling_cache/drivers_modelled.RDS")
+num_drivers_modelled <- length(drivers_modelled)
+sensitivity_stats <- list()
+specificity_stats <- list()
+accuracy_stats <- list()
+f1score_stats <- list()
+combined_data <- NULL
+for (driver in drivers_modelled) {
+  d <- readRDS(paste("./modelling_cache/driver_", driver, ".RDS", sep = ""))
+  d <- evaluate_results(d)
+  num_cases <- nrow(d)
+  num_pos <- sum(d$pos, na.rm = TRUE)
+  num_neg <- sum(d$neg, na.rm = TRUE)
+  num_pred_pos <- sum(d$pred_pos, na.rm = TRUE)
+  num_true_pos <- sum(d$true_pos, na.rm = TRUE)
+  num_true_neg <- sum(d$true_neg, na.rm = TRUE)
+  sensitivity_stats[[driver]] <- num_true_pos / num_pos
+  specificity_stats[[driver]] <- num_true_neg / num_neg
+  accuracy_stats[[driver]] <- (num_true_pos + num_true_neg) / num_cases
+  precision <- num_true_pos / num_pred_pos
+  f1score_stats[[driver]] <- 2. / (1. / precision + 1. / sensitivity_stats[[driver]])
+  if (is.null(combined_data)) {
+    combined_data <- d
+  } else {
+    combined_data <- rbind(combined_data, d)
+  }
+}
+combined_data <- evaluate_results(combined_data)
+num_cases <- nrow(combined_data)
+num_pos <- sum(combined_data$pos, na.rm = TRUE)
+num_neg <- sum(combined_data$neg, na.rm = TRUE)
+num_pred_pos <- sum(combined_data$pred_pos, na.rm = TRUE)
+num_true_pos <- sum(combined_data$true_pos, na.rm = TRUE)
+num_true_neg <- sum(combined_data$true_neg, na.rm = TRUE)
+sensitivity <- num_true_pos / num_pos
+specificity <- num_true_neg / num_neg
+accuracy <- (num_true_pos + num_true_neg) / num_cases
+precision <- num_true_pos / num_pred_pos
+f1score <- 2. / (1. / precision + 1. / sensitivity)
+
+sensitivity_at_zero_log_odds_threshold <- sensitivity
+specificity_at_zero_log_odds_threshold <- specificity
+```
+
+Within the project's time and computing capacity constraints, we managed to train **`r num_drivers_modelled`** one-vs.-all Random Forest models for `r num_drivers_modelled` individual drivers in the database. At the default decision threshold log-odds of zero, our models have the following out-of-sample performance metrics on test cases comprising the 40% driving trip data sets not used in training:
+
+* **Combined Sensitivity**: `r formatC(100 * sensitivity, format = "f", digits = 1)`%;
+* **Combined Specificity**: `r formatC(100 * specificity, format = "f", digits = 1)`%;
+* **Combined Accuracy**: `r formatC(100 * accuracy, format = "f", digits = 1)`%; and
+* **Combined Harmonic F1 Score**: `r formatC(100 * f1score, format = "f", digits = 1)`%.
+
+At this default threshold, the distributions of these metrics across individual drivers' test samples are as follows:
+
+```{r}
+par(mfrow = c(2, 2))
+hist(unlist(sensitivity_stats), main = "Sensitivity across Drivers", xlab = "Sensitivity")
+hist(unlist(specificity_stats), main = "Specificity across Drivers", xlab = "Specificity")
+hist(unlist(accuracy_stats), main = "Accuracy across Drivers", xlab = "Accuracy")
+hist(unlist(f1score_stats), main = "F1 Score across Drivers", xlab = "F1 Score")
+```
+
+We can see that all of these metrics look very decent, concentrating on the high side of the (0, 1) spectrum, peaking in the 70-80% range.
+
+```{r}
+finite_log_odds <-
+  combined_data$log_odds[(!is.na(combined_data$log_odds)) & is.finite(combined_data$log_odds)]
+log_odds_thresholds <- seq(from = min(finite_log_odds), to = max(finite_log_odds), length.out = 999)
+sensitivity_stats <- numeric()
+specificity_stats <- numeric()
+accuracy_stats <- numeric()
+f1score_stats <- numeric()
+for (log_odds_threshold in log_odds_thresholds) {
+  combined_data <- evaluate_results(combined_data, log_odds_threshold = log_odds_threshold)
+  num_pred_pos <- sum(combined_data$pred_pos, na.rm = TRUE)
+  num_true_pos <- sum(combined_data$true_pos, na.rm = TRUE)
+  num_true_neg <- sum(combined_data$true_neg, na.rm = TRUE)
+  sensitivity <- num_true_pos / num_pos
+  sensitivity_stats <- append(sensitivity_stats, sensitivity)
+  specificity <- num_true_neg / num_neg
+  specificity_stats <- append(specificity_stats, specificity)
+  accuracy <- (num_true_pos + num_true_neg) / num_cases
+  accuracy_stats <- append(accuracy_stats, accuracy)
+  precision <- num_true_pos / num_pred_pos
+  f1score <- 2. / (1. / precision + 1. / sensitivity)
+  f1score_stats <- append(f1score_stats, f1score)
+}
+
+best_index <- which.max(f1score_stats)
+best_log_odds_threshold <- log_odds_thresholds[best_index]
+```
+
+It turns out that the default decision threshold is also approximately optimal in terms of maximizing the combined Harmonic F1 Score, achieving a highly favourable trade-off on the ROC curve:
+
+```{r}
+par(mfrow = c(1, 2))
+
+plot(log_odds_thresholds, f1score_stats, type = "l", ylim = c(0., 1.),
+     main = "Best Log-Odds Threshold = 0",
+     xlab = "Log Odds Threshold", ylab = "Harmonic F1 Score")
+abline(v = best_log_odds_threshold, lty=2,col=8)
+
+plot(1. - specificity_stats, sensitivity_stats, type = "l",
+     xlim = c(0., 1.), ylim = c(0., 1.),
+     main = "ROC Curve", xlab = "1 - Specificity", ylab = "Sensitivity")
+abline(a=0,b=1,lty=2,col=8)
+abline(v = 1. - specificity_at_zero_log_odds_threshold,lty=2,col=8)
+abline(h = sensitivity_at_zero_log_odds_threshold,lty=2,col=8)
+```
+
+
+# 4. Conclusion and Potential Directions for Improvement
+
+In this project, we have demonstrated the efficacy in characterizing individual driving styles of features such as velocity, acceleration, jerk, angular velocity and angular acceleration derived from relatively high-frequency second-by-second GPS coordinate readings from telematics devices. The approach is simple in terms of both the small handful features used and the implicit assumption of independence among time instances during a driving trip. That this simple approach can achieve average accuracy of about 80% is very promising indeed.
+
+Another reason to be optimistic about these results is that the labels provided by AXA are in fact noisy: of the 200 trips labeled with each driver *D*, there are an undisclosed minority number of random trips that are actually not by *D*. This is the case for anonymization purposes. Had the labels been entirely clean, as should be the case in a well-maintained corporate database, our models would have achieved even higher accuracy, perhaps in the 90%s.
+
+Possibilities for improvement include:
+
+* **Time Series Approach with Autocorrelations**: We expect accuracy gains when we relax the strong independence assumption and model the correlations among observations at different time instances.
+
+* **Trip Pattern Matching**: we have so far ignored information such as the ($x_t$, $y_t$) coordinates as well as total trip duration. Such information can potentially be used to detect personal itineraries that each driver frequently perform, such as work commute, school drop-off/pick-up, and shopping, and should contain a lot of signals about the identity of the driver. This approach, however, can be very contentious on privacy grounds. 
 
 ```{r echo=FALSE}
 stopCluster(cl)

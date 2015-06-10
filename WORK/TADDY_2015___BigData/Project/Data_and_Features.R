@@ -242,16 +242,15 @@ build_one_vs_all_data_sets <- function(driver, data_folder_path, unclean_velocit
 }
 
 
-predict_driver <- function(rf_model, data_set, indices, threshold = .5) {
+predict_driver <- function(random_forest, data_set, indices) {
   results <- list(driver = character(),
                   trip = integer(),
                   truth = character(),
-                  pred = character())
-  p <- predict(rf_model, newdata = data_set, type = "prob")
+                  log_odds = numeric())
+  p <- predict(random_forest, newdata = data_set, type = "prob")
   data_set$log_p_other <- log(p[, 1])
   data_set$log_p_self <- log(p[, 2])
   drivers <- names(indices)
-  threshold_log_odds <- log(threshold / (1 - threshold))
   for (dr in drivers) {
     trips <- indices[[dr]]
     for (tr in trips) {
@@ -259,21 +258,16 @@ predict_driver <- function(rf_model, data_set, indices, threshold = .5) {
       results$trip <- append(results$trip, tr)
       d <- data_set[(driver == dr) & (trip == tr)]
       results$truth <- append(results$truth, as.character(d$driver_class[1]))
-      log_odds <- sum(d$log_p_self) - sum(d$log_p_other)
-      tryCatch({
-        if (log_odds > threshold_log_odds) {
-          results$pred <- append(results$pred, "self")
-        } else {
-          results$pred <- append(results$pred, "other")
-        }
-      }, error = function(err) {
-        results$pred <- append(results$pred, NA)
-      })
+      results$log_odds <- append(results$log_odds, sum(d$log_p_self) - sum(d$log_p_other))
     }
   }
-  results <- as.data.table(results)
+  as.data.table(results)
+}
+
+
+evaluate_results <- function(results, log_odds_threshold = 0.) {
   results[, `:=`(pos = (truth == "self"),
-                 pred_pos = (pred == "self"))]
+                 pred_pos = (log_odds >= log_odds_threshold))]
   results[, `:=`(neg = !pos,
                  pred_neg = !pred_pos)]
   results[, `:=`(true_pos = pos & pred_pos,
@@ -283,19 +277,6 @@ predict_driver <- function(rf_model, data_set, indices, threshold = .5) {
   results
 }
 
-
-evaluate_results <- function(drivers_modelled) {
-  d <- NULL
-  for (driver in drivers_modelled) {
-    driver_results <- readRDS(paste("driver_", driver, ".RDS", sep = ""))
-    if (is.null(d)) {
-      d <- driver_results
-    } else {
-      d <- rbind(d, driver_results)
-    }
-  }
-  
-}
 
 ## plot the ROC curve for classification of y with p
 roc <- function(p,y, ...){
