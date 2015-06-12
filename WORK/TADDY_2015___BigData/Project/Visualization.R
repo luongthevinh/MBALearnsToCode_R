@@ -12,16 +12,16 @@ plot_trip <- function(trip_data_table, arrow_size_mm = 1, title = "", self_or_ot
                      arrow = arrow(length = unit(arrow_size_mm, "mm")), ...) +
         ggtitle(title)
     } else {
-     d <- trip_data_table
-     d[, `:=`(self_x = as.numeric(NA),
-              self_y = as.numeric(NA))]
-     d[as.logical(self_or_other) == TRUE, `:=`(self_x = x,
-                                     self_y = y)]
-     ggp <- ggplot(trip_data_table, aes(x, y)) +
-       geom_segment(aes(xend = x + dx, yend = y + dy),
-                    arrow = arrow(length = unit(arrow_size_mm, "mm")), ...) +
-       geom_point(aes(self_x, self_y), color='magenta', size=3) +
-       ggtitle(title)
+      d <- trip_data_table
+      d[, `:=`(self_x = as.numeric(NA),
+               self_y = as.numeric(NA))]
+      d[as.logical(self_or_other) == TRUE, `:=`(self_x = x,
+                                                self_y = y)]
+      ggp <- ggplot(trip_data_table, aes(x, y)) +
+        geom_segment(aes(xend = x + dx, yend = y + dy),
+                     arrow = arrow(length = unit(arrow_size_mm, "mm")), ...) +
+        geom_point(aes(self_x, self_y), color='magenta', size=3) +
+        ggtitle(title)
     }
   } else {
     d <- trip_data_table
@@ -40,9 +40,9 @@ plot_trip <- function(trip_data_table, arrow_size_mm = 1, title = "", self_or_ot
 
 
 plot_trip_data_matrix <- function(trip_data_table) {
-   ggpairs(trip_data_table[, .(velocity, acceleration,
-                                 angular_velocity, #abs_angular_velocity,
-                                 angular_acceleration)])  #, abs_angular_acceleration
+  ggpairs(trip_data_table[, .(velocity, acceleration,
+                              angular_velocity, #abs_angular_velocity,
+                              angular_acceleration)])  #, abs_angular_acceleration
 }
 
 

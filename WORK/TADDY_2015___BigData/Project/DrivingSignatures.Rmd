@@ -8,7 +8,7 @@ geometry: margin=0.5in
 
 ```{r echo=FALSE}
 library(knitr)
-opts_chunk$set(echo = FALSE, warning=FALSE)  #cache = TRUE, 
+opts_chunk$set(echo = FALSE, warning=FALSE)  #don't use "cache", which creates huge files in Git repo
 ```
 
 ``` {r message=FALSE, warning=FALSE, results='hide'}
@@ -20,14 +20,8 @@ source("Data_and_Features.R")
 source("Visualization.R")
 # Load key packages
 library(data.table)
-library(plyr)
-library(reshape2)
 library(ggplot2)
-library(GGally)
-library(caret)
-library(gamlr)
 library(randomForest)
-library(lubridate)
 # Start parallel computing cluster over multi cores
 library(doSNOW)
 cl <- makeCluster(6, type = "SOCK")
@@ -297,6 +291,8 @@ We opted for Random Forest for building the one-vs.-all classification models, b
 
 # 3. Results and Evaluation
 
+## 3.1. Interpretation of Signature Driving Styles
+
 To illustrate our modelling approach, let us consider a one-vs.-all classification model trained on trips by an individual driver - Driver #1 - versus randomly sampled trips from other drivers. We can see what the model believes signifies Driver #1's driving style by looking at time instances for which the model predicts high positive-class probabilities:
 
 ```{r}
@@ -306,17 +302,18 @@ model_data_1 <- readRDS('model_data_for_driver_1.RDS')
 #saveRDS(model_data_1, 'model_data_for_driver_1.RDS')
 #train_data_1 <- copy(model_data_1$train)
 random_forest_1 <- readRDS('C:/Cloud/random_forest_for_driver_1.RDS')
-#  randomForest(x = train_data_1[, .(velocity, acceleration, abs_acceleration, jerk, abs_jerk,
-#                                    angular_velocity, abs_angular_velocity,
-#                                    angular_acceleration, abs_angular_acceleration)],
-#               y = train_data_1$driver_class)
+  #randomForest(x = train_data_1[, .(velocity, acceleration, abs_acceleration, jerk, abs_jerk,
+  #                                  angular_velocity, abs_angular_velocity,
+  #                                  angular_acceleration, abs_angular_acceleration)],
+  #             y = train_data_1$driver_class,
+  #             importance = TRUE)
 #saveRDS(random_forest_1, 'C:/Cloud/random_forest_for_driver_1.RDS')
 
 d_1_2 <- calc_trip_data(read_driving_trip(data_folder_path, 1, 2))[
   (velocity > 2) & (overall_check == TRUE)]
 pred <- predict(random_forest_1, newdata = d_1_2, type = "prob")
-p1 <- plot_trip(d_1_2, 1.3, self_or_other = (pred[, 2] > .95),
-          title = "Dr#1 Tr#2: P>95% highlighted", color = "blue")
+p1 <- plot_trip(d_1_2, 1.3, self_or_other = (pred[, 2] > .90),
+          title = "Dr#1 Tr#2: P>90% highlighted", color = "blue")
 
 d_1_60 <- calc_trip_data(read_driving_trip(data_folder_path, 1, 60))[
   (velocity > 2) & (overall_check == TRUE)]
@@ -329,7 +326,13 @@ multiplot(p1, p2, cols = 2)
 
 We can see that Driver #1's most characteristic maneuvers seem to cluster around bends, which suggests that his/her combinations of velocity, acceleration, jerk, angular velocity and angular acceleration just before, during and just after turning are very different from those by another "average" driver.
 
-The signature styles differ quite diversely among drivers. For example, Driver #12 seem to have highly characteristic behaviors along straight roads or highways: 
+Driver #1's style is strongly driven by his/her velocity, absolute acceleration (i.e. how suddenly or gradually he/she speeds up or slows down), and absolute angular acceleration (i.e. how suddenly or gradually he/she turns the steering wheel) as can be seen in the below variable importance plot:
+
+```{r}
+varImpPlot(random_forest_1, type = 1, main = "Driver #1's Variable Importance")
+```
+
+Signature personal driving styles differ quite diversely among drivers. For example, Driver #12 seems to have highly characteristic behaviors along straight sections of roads and highways, and his/her style is mainly driven by velocity, absolute angular velocity and absolute angular acceleration:
 
 ```{r}
 #unclean <- readRDS(file.path(superfolder_path, "unclean_velocity_data_cases.RDS"))
@@ -341,14 +344,15 @@ random_forest_12 <- readRDS('C:/Cloud/random_forest_for_driver_12.RDS')
 #  randomForest(x = train_data_12[, .(velocity, acceleration, abs_acceleration, jerk, abs_jerk,
 #                                    angular_velocity, abs_angular_velocity,
 #                                    angular_acceleration, abs_angular_acceleration)],
-#               y = train_data_12$driver_class)
+#               y = train_data_12$driver_class,
+#               importance = TRUE)
 #saveRDS(random_forest_12, 'C:/Cloud/random_forest_for_driver_12.RDS')
 
 d_12_2 <- calc_trip_data(read_driving_trip(data_folder_path, 12, 2))[
   (velocity > 2) & (overall_check == TRUE)]
 pred <- predict(random_forest_12, newdata = d_12_2, type = "prob")
-p1 <- plot_trip(d_12_2, 1.3, self_or_other = (pred[, 2] > .85),
-          title = "Dr#12 Tr#2: P>85% highlighted", color = "blue")
+p1 <- plot_trip(d_12_2, 1.3, self_or_other = (pred[, 2] > .90),
+          title = "Dr#12 Tr#2: P>90% highlighted", color = "blue")
 
 d_12_6 <- calc_trip_data(read_driving_trip(data_folder_path, 12, 6))[
   (velocity > 2) & (overall_check == TRUE)]
@@ -359,6 +363,12 @@ p2 <- plot_trip(d_12_6, 1., self_or_other = (pred[, 2] > .95),
 multiplot(p1, p2, cols = 2)
 ```
 
+```{r}
+varImpPlot(random_forest_12, type = 1, main = "Driver #12's Variable Importance")
+```
+
+
+## 3.2. Overall Out-of-Sample Classification Performance
 
 ```{r}
 drivers_modelled <- readRDS("./modelling_cache/drivers_modelled.RDS")
@@ -405,7 +415,7 @@ sensitivity_at_zero_log_odds_threshold <- sensitivity
 specificity_at_zero_log_odds_threshold <- specificity
 ```
 
-Within the project's time and computing capacity constraints, we managed to train **`r num_drivers_modelled`** one-vs.-all Random Forest models for `r num_drivers_modelled` individual drivers in the database. At the default decision threshold log-odds of zero, our models have the following out-of-sample performance metrics on test cases comprising the 40% driving trip data sets not used in training:
+In total, we trained **`r formatC(num_drivers_modelled, big.mark = ",")`** one-vs.-all Random Forest models for `r formatC(num_drivers_modelled, big.mark = ",")` individual drivers in the database. At the default decision threshold log-odds of zero, our models have the following out-of-sample performance metrics on test cases comprising the 40% driving trip data sets not used in training:
 
 * **Combined Sensitivity**: `r formatC(100 * sensitivity, format = "f", digits = 1)`%;
 * **Combined Specificity**: `r formatC(100 * specificity, format = "f", digits = 1)`%;
@@ -475,7 +485,7 @@ abline(h = sensitivity_at_zero_log_odds_threshold,lty=2,col=8)
 
 In this project, we have demonstrated the efficacy in characterizing individual driving styles of features such as velocity, acceleration, jerk, angular velocity and angular acceleration derived from relatively high-frequency second-by-second GPS coordinate readings from telematics devices. The approach is simple in terms of both the small handful features used and the implicit assumption of independence among time instances during a driving trip. That this simple approach can achieve average accuracy of about 80% is very promising indeed.
 
-Another reason to be optimistic about these results is that the labels provided by AXA are in fact noisy: of the 200 trips labeled with each driver *D*, there are an undisclosed minority number of random trips that are actually not by *D*. This is the case for anonymization purposes. Had the labels been entirely clean, as should be the case in a well-maintained corporate database, our models would have achieved even higher accuracy, perhaps in the 90%s.
+Another reason to be optimistic about these results is that the labels provided by AXA are in fact noisy: of the 200 trips labeled with each driver *D*, there are an undisclosed minority number of random trips that are actually not by *D*. This is done for anonymization purposes. Had the labels been entirely clean, as should be the case in a well-maintained corporate database, our models would have achieved even higher accuracy, perhaps in the 90%s.
 
 Possibilities for improvement include:
 
