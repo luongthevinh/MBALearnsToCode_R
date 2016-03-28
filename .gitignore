@@ -11,3 +11,10 @@
 # produced vignettes
 vignettes/*.html
 vignettes/*.pdf
+
+# IntelliJ IDEA files
+*.iml
+.idea/
+
+# Icon files
+Icon*
